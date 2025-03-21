@@ -3,8 +3,8 @@ from rdkit.Chem import AllChem
 import os
 
 # Input file name and the folder where molecules will be saved
-sdf_file = "Maybridge_HitCreator_V2.sdf"
-output_folder = "Maybridge_HitCreator_test"
+sdf_file = "/home/suara/Desktop/Project/ozagrel.sdf"
+output_folder = "test"
 
 # Create the output folder if it doesn't exist
 if not os.path.exists(output_folder):

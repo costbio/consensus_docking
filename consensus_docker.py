@@ -137,11 +137,60 @@ def run_smina(args, logger, pocket_center, pocket_size):
     --size_x {pocket_size[0]} --size_y {pocket_size[1]} --size_z {pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
     --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
     logger.info('Running smina... Done.')
-def consensus_dock(args, logger):
 
+
+def run_ledock(args, logger):
+    logger.info('Running LeDock...')
+    for i in range(len(args.ligands_chunks)):
+        chunk = args.ligands_chunks[i]
+        chunk_text = "\n".join(chunk) + "\n"
+        with open(f'ligands_{i}.txt', "w") as f:
+            f.write(chunk_text)
+
+        dock_in = f"""
+        Receptor
+        {os.path.join(args.outfolder, 'receptor.pdbqt')}
+
+        RMSD
+        1.0
+
+        Binding pocket
+        {args.pocket_center[0]} {args.pocket_center[1]} {args.pocket_center[2]} 
+        {args.pocket_size[0]} {args.pocket_size[1]} {args.pocket_size[2]}
+
+        Number of binding poses
+        20
+
+        Ligands list
+        ligands_{i}.txt
+
+        END
+        """
+
+        with open(f'dock_{i}.in', 'w') as dock_in_f:
+            dock_in_f.write(dock_in.strip() + "\n")
+
+        subprocess.call(f"{args.ledock_path} dock_{i}.in", shell=True)
+
+    logger.info('Running LeDock... Done.')
+
+def consensus_dock(args, logger):
+    # Convert receptor pdb to pdbqt format
     pdb_to_pdbqt(args.receptor_pdb, os.path.join(args.outfolder, 'receptor.pdbqt'), logger, pH=args.pH)
+
+    # Get pocket coordinates
     pocket_center, pocket_size = get_pocket_coords(args, logger)
+
+    # Add pocket coordinates and ligands chunks to args
+    args.pocket_center = pocket_center
+    args.pocket_size = pocket_size
+    args.ligands_chunks = np.array_split(glob.glob(f"{args.outfolder}/*.mol2"), args.num_threads)
+
+    # Run smina docking
     run_smina(args, logger, pocket_center, pocket_size)
+
+    # Run LeDock docking
+    run_ledock(args, logger)
 
 def main():
     # Initialize argument parser
@@ -155,6 +204,7 @@ def main():
     parser.add_argument('--pH', type=float, default=7.4, help='pH value for adding missing hydrogens (default: 7.4)')
     parser.add_argument('--receptor_pdb', type=str, help='Path to receptor PDB file')
     parser.add_argument('--ligand_sdf', type=str, help='Path to ligand SDF file')
+    parser.add_argument('--ligand_folder', type=str, required=True, help='Path to folder containing ligand mol2 files')
     parser.add_argument('--pocket_pdb', type=str, help='Path to pocket PDB file')
     parser.add_argument('--exhaustiveness', type=int, default=12, help='Exhaustiveness value for Smina (default: 12)')
     parser.add_argument('--num_modes', type=int, default=20, help='Number of modes for Smina (default: 20)')
@@ -162,6 +212,7 @@ def main():
 
     args = parser.parse_args()
     
+
     # Create output directory if it doesn't exist
     os.makedirs(args.outfolder, exist_ok=False)
 

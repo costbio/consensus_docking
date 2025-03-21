@@ -15,6 +15,7 @@ import glob
 import multiprocessing
 import pandas as pd
 
+
 # Import nglview as nv
 from openbabel import pybel
 from opencadd.structure.core import Structure
@@ -35,11 +36,11 @@ def dockLeDock_single(inputs):
 #%%
 
 # Convert protein to PDBQT format
-receptor_fn = "el7_frame8750_proa_all_fixed.pdb"
-lepro("el7_frame8750_proa_all_fixed.pdb", os.path.abspath("/home/oykum/software/lepro_linux_x86"))
+#receptor_fn = "30ef.pdb"
+#lepro("30ef.pdb", os.path.abspath("/home/ssahin/share/apps/lepro_linux_x86"))
 
 # Load the structure for pocket calculations
-structure_df = DataFrame.from_file("el7_frame8750_proa.all.pdb_res_P_2_1.pdb")
+structure_df = DataFrame.from_file("3oef.pdb")
 positions = np.array([structure_df["atom.x"].values, structure_df["atom.y"].values, structure_df["atom.z"].values])
 pocket_min = np.min(positions, axis=1)
 pocket_max = np.max(positions, axis=1)
@@ -48,7 +49,7 @@ print(pocket_min[0], pocket_max[0])
 print(pocket_min[1], pocket_max[1])
 print(pocket_min[2], pocket_max[2])
 
-out_folder = "Maybridge_HitCreator_deneme"
+out_folder = "test"
 
 # Get list of ligands (mol2 files) directly from the output folder
 ligs_list = glob.glob(f"{out_folder}/*.mol2")
@@ -88,7 +89,7 @@ for i in range(len(ligs_chunks)):
     with open(f'dock_{i}.in', 'w') as dock_in_f:
         dock_in_f.write(dock_in.strip() + "\n")
 
-ledock_bin = os.path.abspath("/home/oykum/software/ledock_linux_x86")
+ledock_bin = os.path.abspath("/home/ssahin/share/apps/ledock")
 ledock_bins = [ledock_bin] * num_threads
 print('buraya kadar geldim.')
 
