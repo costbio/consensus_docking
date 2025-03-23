@@ -147,16 +147,6 @@ def get_pocket_coords(args, logger):
     logger.info('Getting pocket coordinates... Done.')
     return pocket_center, pocket_size, min_coords, max_coords
 
-def run_smina(args, logger):
-    logger.info('Running smina...')
-    subprocess.call(f"{args.smina_path} -r {args.smina_pdbqt} -l {args.ligand_sdf} \
-    --center_x {args.pocket_center[0]} --center_y {args.pocket_center[1]} --center_z {args.pocket_center[2]} \
-    --size_x {args.pocket_size[0]} --size_y {args.pocket_size[1]} --size_z {args.pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
-    --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
-    logger.info('Running smina... Done.')
-
-    split_mol(args, logger, tool="smina")
-
 def split_mol(args, logger, tool="smina"):
     logger.info('Splitting docked poses into individual files...')
     if tool == "smina":
@@ -192,6 +182,16 @@ def split_mol(args, logger, tool="smina"):
                     outfile.writelines(current_chunk)
 
     logger.info('Splitting docked poses into individual files... Done.')
+
+def run_smina(args, logger):
+    logger.info('Running smina...')
+    subprocess.call(f"{args.smina_path} -r {args.smina_pdbqt} -l {args.ligand_sdf} \
+    --center_x {args.pocket_center[0]} --center_y {args.pocket_center[1]} --center_z {args.pocket_center[2]} \
+    --size_x {args.pocket_size[0]} --size_y {args.pocket_size[1]} --size_z {args.pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
+    --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
+    logger.info('Running smina... Done.')
+
+    split_mol(args, logger, tool="smina")
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -244,7 +244,6 @@ def run_ledock(args, logger):
     split_mol(args, logger, tool="ledock")
 
 def consensus_dock(args, logger):
-
     # Convert receptor pdb to pdbqt format
     args.smina_pdbqt = os.path.join(args.outfolder_smina, 'receptor.pdbqt')
     pdb_to_pdbqt(args.receptor_pdb, args.smina_pdbqt, logger, pH=args.pH)
