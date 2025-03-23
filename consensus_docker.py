@@ -187,7 +187,7 @@ def make_complex(args, logger, tool="smina"):
     logger.info('Making complex...')
 
     if tool == "smina":
-        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=True)
+        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=False)
         if receptor is None:
             raise RuntimeError(f"Failed to load receptor from PDB: {args.receptor_pdb}")
 
@@ -207,7 +207,7 @@ def make_complex(args, logger, tool="smina"):
             Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_smina, f"complex_{i}.pdb"))
 
     elif tool == "ledock":
-        receptor = Chem.MolFromPDBFile(args.lepro_pdb, removeHs=False, sanitize=True)
+        receptor = Chem.MolFromPDBFile(args.lepro_pdb, removeHs=False, sanitize=False)
         if receptor is None:
             raise RuntimeError(f"Failed to load receptor from PDB: {args.lepro_pdb}")
 
