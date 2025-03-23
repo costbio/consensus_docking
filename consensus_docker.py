@@ -226,7 +226,7 @@ def make_complex(args, logger, tool="smina"):
             
 def run_smina(args, logger):
     logger.info('Running smina...')
-    subprocess.call(f"{args.smina_path} -r {args.smina_pdbqt} -l {args.ligand_sdf} \
+    subprocess.call(f"{args.smina_path} -r {args.receptor_pdbqt} -l {args.ligand_sdf} \
     --center_x {args.pocket_center[0]} --center_y {args.pocket_center[1]} --center_z {args.pocket_center[2]} \
     --size_x {args.pocket_size[0]} --size_y {args.pocket_size[1]} --size_z {args.pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
     --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
@@ -240,12 +240,6 @@ def run_smina(args, logger):
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
-    
-    # Get stem from file name of args.ligand_sdf
-    sdf_path = Path(args.ligand_sdf)
-    sdf_stem = sdf_path.stem
-    args.ligand_mol2 = os.path.join(args.outfolder_ledock, sdf_stem + '.mol2')
-    sdf_to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2)
 
     with open(os.path.join(args.outfolder_ledock,'ligand.txt'), "w") as f:
         f.write(args.ligand_mol2)
@@ -277,7 +271,7 @@ def run_ledock(args, logger):
     subprocess.call(f"{args.ledock_path} {os.path.join(args.outfolder_ledock, 'dock.in')}", shell=True)
 
     # Find the file with ".dok" extension in ledock output folder.
-    dock_files = glob.glob(os.path.join(args.outfolder_ledock, '*.dok'))
+    dock_files = glob.glob(os.path.join(args.outfolder_input, '*.dok'))
     dock_file = dock_files[0]
 
     # Rename that file to out.dok
@@ -292,10 +286,54 @@ def run_ledock(args, logger):
     # Make complex
     make_complex(args, logger, tool="ledock")
 
+def run_gd3(args, logger):
+    logger.info('Running gd3...')
+    
+    dock_in = f"""
+    data_directory   {args.gd3_path}/data/
+    infile_pdb       {args.receptor_pdb}
+    infile_ligand    {args.ligand_mol2}
+    top_type         polarh
+    fix_type         all
+    ligdock_prefix   {args.outfolder_gd3}/
+    grid_box_cntr    {args.pocket_center[0]} {args.pocket_center[1]} {args.pocket_center[2]}
+    grid_n_elem      61 61 61
+    grid_width       0.375
+    weight_type      GalaxyDock3
+    first_bank       rand
+    max_trial        50000
+    e0max            1000.0
+    e1max            1000000.0
+    n_proc           10
+    """
+
+    with open(os.path.join(args.outfolder_gd3, 'galaxydock.in'), 'w') as dock_in_f:
+        dock_in_f.write(dock_in.strip() + "\n")
+
+    subprocess.call(
+        f"{args.gd3_path}/bin/GalaxyDock3 {os.path.join(args.outfolder_gd3, 'galaxydock.in')} > {os.path.join(args.outfolder_gd3, 'galaxydock.log')}", 
+        shell=True)
+
+    logger.info('Running gd3... Done.')
+
+    # Split docked poses
+    #split_mol(args, logger, tool="gd3")
+
+    # Make complex
+    #make_complex(args, logger, tool="gd3")
+
 def consensus_dock(args, logger):
     # Convert receptor pdb to pdbqt format
-    args.smina_pdbqt = os.path.join(args.outfolder_smina, 'receptor.pdbqt')
-    pdb_to_pdbqt(args.receptor_pdb, args.smina_pdbqt, logger, pH=args.pH)
+    args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
+    pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+
+    # Get stem from file name of args.ligand_sdf
+    sdf_path = Path(args.ligand_sdf)
+    sdf_stem = sdf_path.stem
+    args.ligand_mol2 = os.path.join(args.outfolder_input, sdf_stem + '.mol2')
+
+    # Convert ligand sdf to mol2
+    sdf_to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2)
 
     # Get pocket coordinates
     pocket_center, pocket_size, min_coords, max_coords = get_pocket_coords(args, logger)
@@ -313,6 +351,9 @@ def consensus_dock(args, logger):
     args.lepro_pdb = lepro(args, logger)
     run_ledock(args, logger)
 
+    # Run GalaxyDock3 docking
+    run_gd3(args, logger)
+
 def main():
     # Initialize argument parser
     parser = argparse.ArgumentParser(
@@ -320,9 +361,10 @@ def main():
     )
 
     parser.add_argument('--outfolder', type=str, help='Base output directory (default: current directory)')
-    parser.add_argument('--smina_path', type=str, default='smina', help='Path to Smina executable (default: smina)')
-    parser.add_argument('--ledock_path', type=str, default='ledock', help='Path to LeDock executable (default: ledock)')
+    parser.add_argument('--smina_path', type=str, default=False, help='Path to Smina executable (default: smina)')
+    parser.add_argument('--ledock_path', type=str, default=False, help='Path to LeDock executable (default: ledock)')
     parser.add_argument('--lepro_path', type=str, default='lepro', help='Path to lepro executable (default: lepro)')
+    parser.add_argument('--gd3_path', type=str, help='Path to GalaxyDock3 directory', default=False)
     parser.add_argument('--pH', type=float, default=7.4, help='pH value for adding missing hydrogens (default: 7.4)')
     parser.add_argument('--receptor_pdb', type=str, help='Path to receptor PDB file')
     parser.add_argument('--ligand_sdf', type=str, help='Path to ligand SDF file')
@@ -336,6 +378,10 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(args.outfolder, exist_ok=False)
 
+    # Create an input directory within outfolder
+    os.makedirs(os.path.join(args.outfolder, 'input'), exist_ok=False)
+    args.outfolder_input = os.path.join(args.outfolder, 'input')
+
     # Create output directory for smina within outfolder
     os.makedirs(os.path.join(args.outfolder, 'smina'), exist_ok=False)
     args.outfolder_smina = os.path.join(args.outfolder, 'smina')
@@ -343,6 +389,10 @@ def main():
     # Create output directory for ledock within outfolder
     os.makedirs(os.path.join(args.outfolder, 'ledock'), exist_ok=False)
     args.outfolder_ledock = os.path.join(args.outfolder, 'ledock')
+
+    # Create output directory for gd3 within outfolder
+    os.makedirs(os.path.join(args.outfolder, 'gd3'), exist_ok=False)
+    args.outfolder_gd3 = os.path.join(args.outfolder, 'gd3')
 
     # Timestamp for job ID
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
