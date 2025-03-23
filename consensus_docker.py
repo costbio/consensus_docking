@@ -6,7 +6,7 @@ import pandas as pd
 from logging.handlers import RotatingFileHandler
 
 #import nglview as nv
-from openbabel import pybel
+from openbabel import pybel, openbabel
 
 from opencadd.structure.core import Structure
 from opencadd.io.dataframe import DataFrame
@@ -183,6 +183,78 @@ def split_mol(args, logger, tool="smina"):
 
     logger.info('Splitting docked poses into individual files... Done.')
 
+def merge_mol(mol1, mol2):
+    
+    # Create a combined molecule
+    combined_mol = pybel.Molecule(openbabel.OBMol())  # Create an empty OBMol
+
+    # Copy mol1 atoms and coordinates
+    for atom in mol1.atoms:
+        new_atom = combined_mol.OBMol.NewAtom()
+        new_atom.SetAtomicNum(atom.atomicnum)
+        new_atom.SetVector(atom.coords[0], atom.coords[1], atom.coords[2])
+        # Copy other data (partial charge, residue info, etc.) if needed
+        if atom.partialcharge:
+            new_atom.SetPartialCharge(atom.partialcharge)
+
+    # Copy mol1 bonds
+    for bond in openbabel.OBMolBondIter(mol1.OBMol):
+        begin_atom_idx = bond.GetBeginAtomIdx() - 1 # OB indexes starts from 1, python from 0.
+        end_atom_idx = bond.GetEndAtomIdx() - 1
+        combined_mol.OBMol.AddBond(begin_atom_idx + 1, end_atom_idx + 1, bond.GetBondOrder())
+
+    # Copy mol2 atoms and coordinates, offsetting atom indices
+    atom_offset = mol1.OBMol.NumAtoms()
+    for atom in mol2.atoms:
+        new_atom = combined_mol.OBMol.NewAtom()
+        new_atom.SetAtomicNum(atom.atomicnum)
+        new_atom.SetVector(atom.coords[0], atom.coords[1], atom.coords[2])
+        # Copy other data if needed
+        if atom.partialcharge:
+            new_atom.SetPartialCharge(atom.partialcharge)
+
+    # Copy ligand bonds. VERY IMPORTANT to offset the indices.
+    for bond in openbabel.OBMolBondIter(mol2.OBMol):
+        begin_atom_idx = bond.GetBeginAtomIdx() -1 #Get index from OB, and -1 for python list.
+        end_atom_idx = bond.GetEndAtomIdx() -1
+        combined_mol.OBMol.AddBond(begin_atom_idx + atom_offset + 1, end_atom_idx + atom_offset + 1, bond.GetBondOrder()) #Add offset, and +1 for OB indexes.
+
+    return combined_mol
+
+def make_complex(args, logger, tool="smina"):
+    logger.info('Making complex...')
+
+    if tool == "smina":
+        receptor = list(pybel.readfile("pdb", args.receptor_pdb))[0]
+
+        # Find out how many ligands we have
+        ligand_sdf = os.path.join(args.outfolder_smina, 'out.sdf')
+        ligands = pybel.readfile("sdf", str(ligand_sdf))
+        num_ligands = len(list(ligands))
+
+        for i in range(1, num_ligands+1):
+            ligand_sdf = os.path.join(args.outfolder_smina, f"out_{i}.sdf")
+            molecule = list(pybel.readfile("sdf", str(ligand_sdf)))[0]
+            
+            docked_complex = merge_mol(receptor, molecule)
+            docked_complex.write("pdb", os.path.join(args.outfolder_smina, f"complex_{i}.pdb"), overwrite=True)
+
+    elif tool == "ledock":
+        receptor = list(pybel.readfile("pdb", args.lepro_pdb))[0]
+
+        # Find out how many ligands we have by finding out how many .dok files we have
+        dok_files = glob.glob(os.path.join(args.outfolder_ledock, '*.dok'))
+        num_ligands = len(dok_files)-1 # out.dok contains all ligands so we don't count it
+
+        for i in range(1, num_ligands+1):
+            ligand_dok = os.path.join(args.outfolder_ledock, f"out_{i}.dok")
+            molecule = list(pybel.readfile("pdb", str(ligand_dok)))[0]
+            
+            docked_complex = merge_mol(receptor, molecule)
+            docked_complex.write("pdb", os.path.join(args.outfolder_ledock, f"complex_{i}.pdb"), overwrite=True)
+    
+    logger.info('Making complex... Done.')
+            
 def run_smina(args, logger):
     logger.info('Running smina...')
     subprocess.call(f"{args.smina_path} -r {args.smina_pdbqt} -l {args.ligand_sdf} \
@@ -191,7 +263,11 @@ def run_smina(args, logger):
     --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
     logger.info('Running smina... Done.')
 
+    # Split docked poses
     split_mol(args, logger, tool="smina")
+
+    # Make complex
+    make_complex(args, logger, tool="smina")
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -241,7 +317,11 @@ def run_ledock(args, logger):
 
     logger.info('Running LeDock... Done.')
 
+    # Split docked poses
     split_mol(args, logger, tool="ledock")
+
+    # Make complex
+    make_complex(args, logger, tool="ledock")
 
 def consensus_dock(args, logger):
     # Convert receptor pdb to pdbqt format
