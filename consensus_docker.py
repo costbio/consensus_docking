@@ -183,64 +183,33 @@ def split_mol(args, logger, tool="smina"):
 
     logger.info('Splitting docked poses into individual files... Done.')
 
-def merge_mol(mol1, mol2):
-    
-    # Create a combined molecule
-    combined_mol = pybel.Molecule(openbabel.OBMol())  # Create an empty OBMol
-
-    # Copy mol1 atoms and coordinates
-    for atom in mol1.atoms:
-        new_atom = combined_mol.OBMol.NewAtom()
-        new_atom.SetAtomicNum(atom.atomicnum)
-        new_atom.SetVector(atom.coords[0], atom.coords[1], atom.coords[2])
-        # Copy other data (partial charge, residue info, etc.) if needed
-        if atom.partialcharge:
-            new_atom.SetPartialCharge(atom.partialcharge)
-
-    # Copy mol1 bonds
-    for bond in openbabel.OBMolBondIter(mol1.OBMol):
-        begin_atom_idx = bond.GetBeginAtomIdx() - 1 # OB indexes starts from 1, python from 0.
-        end_atom_idx = bond.GetEndAtomIdx() - 1
-        combined_mol.OBMol.AddBond(begin_atom_idx + 1, end_atom_idx + 1, bond.GetBondOrder())
-
-    # Copy mol2 atoms and coordinates, offsetting atom indices
-    atom_offset = mol1.OBMol.NumAtoms()
-    for atom in mol2.atoms:
-        new_atom = combined_mol.OBMol.NewAtom()
-        new_atom.SetAtomicNum(atom.atomicnum)
-        new_atom.SetVector(atom.coords[0], atom.coords[1], atom.coords[2])
-        # Copy other data if needed
-        if atom.partialcharge:
-            new_atom.SetPartialCharge(atom.partialcharge)
-
-    # Copy ligand bonds. VERY IMPORTANT to offset the indices.
-    for bond in openbabel.OBMolBondIter(mol2.OBMol):
-        begin_atom_idx = bond.GetBeginAtomIdx() -1 #Get index from OB, and -1 for python list.
-        end_atom_idx = bond.GetEndAtomIdx() -1
-        combined_mol.OBMol.AddBond(begin_atom_idx + atom_offset + 1, end_atom_idx + atom_offset + 1, bond.GetBondOrder()) #Add offset, and +1 for OB indexes.
-
-    return combined_mol
-
 def make_complex(args, logger, tool="smina"):
     logger.info('Making complex...')
 
     if tool == "smina":
-        receptor = list(pybel.readfile("pdb", args.receptor_pdb))[0]
+        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=True)
+        if receptor is None:
+            raise RuntimeError(f"Failed to load receptor from PDB: {args.receptor_pdb}")
 
         # Find out how many ligands we have
         ligand_sdf = os.path.join(args.outfolder_smina, 'out.sdf')
-        ligands = pybel.readfile("sdf", str(ligand_sdf))
+        ligand_supplier = Chem.SDMolSupplier(ligand_sdf, removeHs=False)
+        ligands = [m for m in ligand_supplier if m is not None]
+        if not ligands:
+            raise RuntimeError(f"No valid molecules found in SDF file: {ligand_file}")
+        
         num_ligands = len(list(ligands))
 
         for i in range(1, num_ligands+1):
-            ligand_sdf = os.path.join(args.outfolder_smina, f"out_{i}.sdf")
-            molecule = list(pybel.readfile("sdf", str(ligand_sdf)))[0]
+            ligand = ligands[i-1]
             
-            docked_complex = merge_mol(receptor, molecule)
-            docked_complex.write("pdb", os.path.join(args.outfolder_smina, f"complex_{i}.pdb"), overwrite=True)
+            docked_complex = Chem.CombineMols(receptor, ligand)
+            Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_smina, f"complex_{i}.pdb"))
 
     elif tool == "ledock":
-        receptor = list(pybel.readfile("pdb", args.lepro_pdb))[0]
+        receptor = Chem.MolFromPDBFile(args.lepro_pdb, removeHs=False, sanitize=True)
+        if receptor is None:
+            raise RuntimeError(f"Failed to load receptor from PDB: {args.lepro_pdb}")
 
         # Find out how many ligands we have by finding out how many .dok files we have
         dok_files = glob.glob(os.path.join(args.outfolder_ledock, '*.dok'))
@@ -248,10 +217,10 @@ def make_complex(args, logger, tool="smina"):
 
         for i in range(1, num_ligands+1):
             ligand_dok = os.path.join(args.outfolder_ledock, f"out_{i}.dok")
-            molecule = list(pybel.readfile("pdb", str(ligand_dok)))[0]
+            ligand = Chem.MolFromPDBFile(ligand_dok, removeHs=False, sanitize=True)
             
-            docked_complex = merge_mol(receptor, molecule)
-            docked_complex.write("pdb", os.path.join(args.outfolder_ledock, f"complex_{i}.pdb"), overwrite=True)
+            docked_complex = Chem.CombineMols(receptor, ligand)
+            Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_ledock, f"complex_{i}.pdb"))
     
     logger.info('Making complex... Done.')
             
