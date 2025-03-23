@@ -1,5 +1,5 @@
 from pathlib import Path
-import subprocess, os, glob, multiprocessing, argparse, logging, warnings, uuid
+import subprocess, os, glob, multiprocessing, argparse, logging, warnings, uuid, sys, shutil
 from datetime import datetime
 import numpy as np
 import pandas as pd
@@ -10,6 +10,9 @@ from openbabel import pybel
 
 from opencadd.structure.core import Structure
 from opencadd.io.dataframe import DataFrame
+
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
 # filter warnings
 warnings.filterwarnings("ignore")
@@ -67,8 +70,8 @@ def pdb_to_pdbqt(pdb_path, pdbqt_path, logger, pH=7.4):
     logger.info('Converting receptor pdb to pdbqt format...')
     molecule = list(pybel.readfile("pdb", str(pdb_path)))[0]
     # add hydrogens at given pH
-    molecule.OBMol.CorrectForPH(pH)
-    molecule.addh()
+    #molecule.OBMol.CorrectForPH(pH)
+    #molecule.addh()
     # add partial charges to each atom
     for atom in molecule.atoms:
         atom.OBAtom.GetPartialCharge()
@@ -76,7 +79,19 @@ def pdb_to_pdbqt(pdb_path, pdbqt_path, logger, pH=7.4):
     logger.info('Converting receptor pdb to pdbqt format... Done.')
     return
 
-def sdf_to_mol2(sdf_file, mol_name, mol2_filename):
+def lepro(args, logger):
+    logger.info('Preparing input pdb for LeDock by lepro exe...')
+    subprocess.run([args.lepro_path, args.receptor_pdb])
+    logger.info('Preparing input pdb for LeDock by lepro exe... Done.')
+
+    # Move pro.pdb found in working directory to os.path.join(args.outfolder, 'ledock')
+    pro_path = os.path.join(os.getcwd(), 'pro.pdb')
+    shutil.move(pro_path, args.outfolder_ledock)
+
+    # Return final path of pro.pdb
+    return os.path.join(args.outfolder_ledock, 'pro.pdb')
+
+def sdf_to_mol2(sdf_file, mol_name, mol2_filepath):
 
     # Read the SDF file
     supplier = Chem.SDMolSupplier(sdf_file)
@@ -117,79 +132,137 @@ def sdf_to_mol2(sdf_file, mol_name, mol2_filename):
         end = bond.GetEndAtomIdx() + 1
         mol2_data += f"{i+1} {start} {end} {bond_type}\n"
 
-    with open(mol2_filename, "w") as f:
+    with open(mol2_filepath, "w") as f:
         f.write(mol2_data)
 
 def get_pocket_coords(args, logger):
     logger.info('Getting pocket coordinates...')
     structure_df = DataFrame.from_file(args.pocket_pdb)
     positions = np.array([structure_df["atom.x"].values,structure_df["atom.y"].values,structure_df["atom.z"].values])
-    pocket_center = list(map(str,((np.max(positions,axis=1) + np.min(positions,axis=1)) / 2)))
-    pocket_size = list(map(str,((np.max(positions,axis=1) - np.min(positions,axis=1)) + 5)))
-    logger.info(f'Pocket center: {pocket_center}, Pocket size: {pocket_size}')
+    min_coords = np.min(positions,axis=1)
+    max_coords = np.max(positions,axis=1)
+    pocket_center = list(map(str,(max_coords + min_coords) / 2))
+    pocket_size = list(map(str,(max_coords - min_coords) + 5))
+    #logger.info(f'Pocket center: {pocket_center}, Pocket size: {pocket_size}')
     logger.info('Getting pocket coordinates... Done.')
-    return pocket_center, pocket_size
+    return pocket_center, pocket_size, min_coords, max_coords
 
-def run_smina(args, logger, pocket_center, pocket_size):
+def run_smina(args, logger):
     logger.info('Running smina...')
-    subprocess.call(f"{args.smina_path} -r {os.path.join(args.outfolder, 'receptor.pdbqt')} -l {args.ligand_sdf} \
-    --center_x {pocket_center[0]} --center_y {pocket_center[1]} --center_z {pocket_center[2]} \
-    --size_x {pocket_size[0]} --size_y {pocket_size[1]} --size_z {pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
+    subprocess.call(f"{args.smina_path} -r {args.smina_pdbqt} -l {args.ligand_sdf} \
+    --center_x {args.pocket_center[0]} --center_y {args.pocket_center[1]} --center_z {args.pocket_center[2]} \
+    --size_x {args.pocket_size[0]} --size_y {args.pocket_size[1]} --size_z {args.pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
     --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
     logger.info('Running smina... Done.')
 
+    split_mol(args, logger, tool="smina")
 
+def split_mol(args, logger, tool="smina"):
+    logger.info('Splitting docked poses into individual files...')
+    if tool == "smina":
+        docked_poses_path = Path(os.path.join(args.outfolder_smina, 'out.sdf'))
+        molecules = pybel.readfile("sdf", str(docked_poses_path))
+        for i, molecule in enumerate(molecules, 1):
+            molecule.write("sdf", os.path.join(args.outfolder_smina, f"out_{i}.sdf"), overwrite=True)
+
+    elif tool == "ledock":
+        docked_poses_path = os.path.join(args.outfolder_ledock, 'out.dok')
+        
+        with open(docked_poses_path, 'r') as infile:
+            file_counter = 1
+            current_chunk = []
+            for line in infile:
+                if line.startswith('REMARK Docking time:'):
+                    continue #Skip this line.
+                elif line.startswith("REMARK Cluster"):
+                    # Start a new chunk
+                    if current_chunk:  # If we have content in the current chunk, write it
+                        output_filepath = os.path.join(args.outfolder_ledock, f"out_{file_counter}.dok")
+                        with open(output_filepath, 'w') as outfile:
+                            outfile.writelines(current_chunk)
+                        file_counter += 1
+                    current_chunk = [line]  # Start a new chunk with the "REMARK Cluster" line
+                else:
+                    current_chunk.append(line)
+
+            # Write the last chunk (if any)
+            if current_chunk:
+                output_filepath = os.path.join(args.outfolder_ledock, f"out_{file_counter}.dok")
+                with open(output_filepath, 'w') as outfile:
+                    outfile.writelines(current_chunk)
+
+    logger.info('Splitting docked poses into individual files... Done.')
+    
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
-    for i in range(len(args.ligands_chunks)):
-        chunk = args.ligands_chunks[i]
-        chunk_text = "\n".join(chunk) + "\n"
-        with open(f'ligands_{i}.txt', "w") as f:
-            f.write(chunk_text)
+    
+    # Get stem from file name of args.ligand_sdf
+    sdf_path = Path(args.ligand_sdf)
+    sdf_stem = sdf_path.stem
+    args.ligand_mol2 = os.path.join(args.outfolder_ledock, sdf_stem + '.mol2')
+    sdf_to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2)
 
-        dock_in = f"""
-        Receptor
-        {os.path.join(args.outfolder, 'receptor.pdbqt')}
+    with open(os.path.join(args.outfolder_ledock,'ligand.txt'), "w") as f:
+        f.write(args.ligand_mol2)
 
-        RMSD
-        1.0
+    dock_in = f"""
+    Receptor
+    {args.lepro_pdb}
 
-        Binding pocket
-        {args.pocket_center[0]} {args.pocket_center[1]} {args.pocket_center[2]} 
-        {args.pocket_size[0]} {args.pocket_size[1]} {args.pocket_size[2]}
+    RMSD
+    1.0
 
-        Number of binding poses
-        20
+    Binding pocket
+    {args.min_coords[0]} {args.max_coords[0]} 
+    {args.min_coords[1]} {args.max_coords[1]}
+    {args.min_coords[2]} {args.max_coords[2]}
 
-        Ligands list
-        ligands_{i}.txt
+    Number of binding poses
+    20
 
-        END
-        """
+    Ligands list
+    {os.path.join(args.outfolder_ledock, 'ligand.txt')}
 
-        with open(f'dock_{i}.in', 'w') as dock_in_f:
-            dock_in_f.write(dock_in.strip() + "\n")
+    END
+    """
 
-        subprocess.call(f"{args.ledock_path} dock_{i}.in", shell=True)
+    with open(os.path.join(args.outfolder_ledock, 'dock.in'), 'w') as dock_in_f:
+        dock_in_f.write(dock_in.strip() + "\n")
+
+    subprocess.call(f"{args.ledock_path} {os.path.join(args.outfolder_ledock, 'dock.in')}", shell=True)
+
+    # Find the file with ".dok" extension in ledock output folder.
+    dock_files = glob.glob(os.path.join(args.outfolder_ledock, '*.dok'))
+    dock_file = dock_files[0]
+
+    # Rename that file to out.dok
+    if dock_file is not None:
+        shutil.move(dock_file, os.path.join(args.outfolder_ledock, 'out.dok'))
 
     logger.info('Running LeDock... Done.')
 
+    split_mol(args, logger, tool="ledock")
+
 def consensus_dock(args, logger):
+
     # Convert receptor pdb to pdbqt format
-    pdb_to_pdbqt(args.receptor_pdb, os.path.join(args.outfolder, 'receptor.pdbqt'), logger, pH=args.pH)
+    args.smina_pdbqt = os.path.join(args.outfolder_smina, 'receptor.pdbqt')
+    pdb_to_pdbqt(args.receptor_pdb, args.smina_pdbqt, logger, pH=args.pH)
 
     # Get pocket coordinates
-    pocket_center, pocket_size = get_pocket_coords(args, logger)
+    pocket_center, pocket_size, min_coords, max_coords = get_pocket_coords(args, logger)
 
     # Add pocket coordinates and ligands chunks to args
     args.pocket_center = pocket_center
     args.pocket_size = pocket_size
-    args.ligands_chunks = np.array_split(glob.glob(f"{args.outfolder}/*.mol2"), args.num_threads)
+    args.min_coords = min_coords
+    args.max_coords = max_coords
 
     # Run smina docking
-    run_smina(args, logger, pocket_center, pocket_size)
+    run_smina(args, logger)
 
     # Run LeDock docking
+    args.lepro_pdb = lepro(args, logger)
     run_ledock(args, logger)
 
 def main():
@@ -201,10 +274,10 @@ def main():
     parser.add_argument('--outfolder', type=str, help='Base output directory (default: current directory)')
     parser.add_argument('--smina_path', type=str, default='smina', help='Path to Smina executable (default: smina)')
     parser.add_argument('--ledock_path', type=str, default='ledock', help='Path to LeDock executable (default: ledock)')
+    parser.add_argument('--lepro_path', type=str, default='lepro', help='Path to lepro executable (default: lepro)')
     parser.add_argument('--pH', type=float, default=7.4, help='pH value for adding missing hydrogens (default: 7.4)')
     parser.add_argument('--receptor_pdb', type=str, help='Path to receptor PDB file')
     parser.add_argument('--ligand_sdf', type=str, help='Path to ligand SDF file')
-    parser.add_argument('--ligand_folder', type=str, required=True, help='Path to folder containing ligand mol2 files')
     parser.add_argument('--pocket_pdb', type=str, help='Path to pocket PDB file')
     parser.add_argument('--exhaustiveness', type=int, default=12, help='Exhaustiveness value for Smina (default: 12)')
     parser.add_argument('--num_modes', type=int, default=20, help='Number of modes for Smina (default: 20)')
@@ -212,7 +285,6 @@ def main():
 
     args = parser.parse_args()
     
-
     # Create output directory if it doesn't exist
     os.makedirs(args.outfolder, exist_ok=False)
 
@@ -229,6 +301,10 @@ def main():
     job_id = f"{timestamp}_{str(uuid.uuid4())[:4]}"
 
     logger = setup_logging(os.path.join(args.outfolder,f"log_{job_id}.log"))
+    logger.info('########## Starting consensus_docker.py #########')
+    logger.info('consensus_docker.py was called with the following arguments: ')
+    logger.info(' '.join(sys.argv))
+    logger.info('########## Starting consensus_docker.py #########')
 
     # Execute commands
     consensus_dock(args, logger)
