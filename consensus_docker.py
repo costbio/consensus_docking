@@ -91,7 +91,7 @@ def lepro(args, logger):
     # Return final path of pro.pdb
     return os.path.join(args.outfolder_ledock, 'pro.pdb')
 
-def sdf_to_mol2(sdf_file, mol_name, mol2_filepath):
+#def sdf_to_mol2(sdf_file, mol_name, mol2_filepath):
 
     # Read the SDF file
     supplier = Chem.SDMolSupplier(sdf_file)
@@ -128,6 +128,59 @@ def sdf_to_mol2(sdf_file, mol_name, mol2_filepath):
         elif bond_type == Chem.rdchem.BondType.AROMATIC:
             bond_type = "ar"
         
+        start = bond.GetBeginAtomIdx() + 1
+        end = bond.GetEndAtomIdx() + 1
+        mol2_data += f"{i+1} {start} {end} {bond_type}\n"
+
+    with open(mol2_filepath, "w") as f:
+        f.write(mol2_data)
+
+def sdf_to_mol2(sdf_file, mol_name, mol2_filepath, optimize=True):
+    """Converts an SDF file to a MOL2 file.""" 
+    supplier = Chem.SDMolSupplier(sdf_file)
+    if supplier is None or len(supplier) == 0:
+        print(f"Error: {sdf_file} file could not be read or is empty.") 
+        return
+
+    mol = supplier[0]
+    if mol is None:
+        print(f"Error: Molecule could not be read from SDF file.") 
+        return
+
+    # Generate and optimize 3D coordinates
+    mol = Chem.AddHs(mol)  # Add hydrogens 
+    AllChem.EmbedMolecule(mol, AllChem.ETKDG())  # Generate 3D coordinates 
+    if optimize:
+        AllChem.MMFFOptimizeMolecule(mol)  # Optimize geometry 
+
+    atoms = mol.GetAtoms()
+    bonds = mol.GetBonds()
+
+    # Create MOL2 header
+    mol2_data = f"@<TRIPOS>MOLECULE\n{mol_name}\n"
+    mol2_data += f"{mol.GetNumAtoms()} {mol.GetNumBonds()} 0 0 0\nSMALL\nUSER_CHARGES\n\n"
+
+    # Add atom information
+    mol2_data += "@<TRIPOS>ATOM\n"
+    for atom in atoms:
+        idx = atom.GetIdx() + 1
+        pos = mol.GetConformer().GetAtomPosition(atom.GetIdx())
+        atom_type = atom.GetSymbol() # Modify this for more advanced atom types. 
+        mol2_data += f"{idx} {atom_type}{idx} {pos.x:.4f} {pos.y:.4f} {pos.z:.4f} {atom_type} {1} \n"
+
+    # Add bond information
+    mol2_data += "@<TRIPOS>BOND\n"
+    for i, bond in enumerate(bonds):
+        bond_type = bond.GetBondType()
+        if bond_type == Chem.rdchem.BondType.SINGLE:
+            bond_type = "1"
+        elif bond_type == Chem.rdchem.BondType.DOUBLE:
+            bond_type = "2"
+        elif bond_type == Chem.rdchem.BondType.TRIPLE:
+            bond_type = "3"
+        elif bond_type == Chem.rdchem.BondType.AROMATIC:
+            bond_type = "ar"
+
         start = bond.GetBeginAtomIdx() + 1
         end = bond.GetEndAtomIdx() + 1
         mol2_data += f"{i+1} {start} {end} {bond_type}\n"
