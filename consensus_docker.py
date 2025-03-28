@@ -14,6 +14,8 @@ from opencadd.io.dataframe import DataFrame
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
+from Bio.PDB import PDBParser
+
 # filter warnings
 warnings.filterwarnings("ignore")
 ob_log_handler = pybel.ob.OBMessageHandler()
@@ -91,15 +93,16 @@ def lepro(args, logger):
     # Return final path of pro.pdb
     return os.path.join(args.outfolder_ledock, 'pro.pdb')
 
-#def sdf_to_mol2(sdf_file, mol_name, mol2_filepath):
+def to_mol2(infile, mol_name, mol2_filepath, logger):
 
-    # Read the SDF file
-    supplier = Chem.SDMolSupplier(sdf_file)
-
-    mol = supplier[0]
+    logger.info('Converting protein/ligand to mol2 format...')
+    if infile.endswith('.sdf'):
+        mol = Chem.SDMolSupplier(infile)[0]
+    elif infile.endswith('.pdb'):
+        mol = Chem.MolFromPDBFile(infile)
 
     # Optimize the molecule (optional)
-    AllChem.Compute2DCoords(mol)
+    #AllChem.Compute2DCoords(mol)
     atoms = mol.GetAtoms()
     bonds = mol.GetBonds()
     
@@ -135,58 +138,7 @@ def lepro(args, logger):
     with open(mol2_filepath, "w") as f:
         f.write(mol2_data)
 
-def sdf_to_mol2(sdf_file, mol_name, mol2_filepath, optimize=True):
-    """Converts an SDF file to a MOL2 file.""" 
-    supplier = Chem.SDMolSupplier(sdf_file)
-    if supplier is None or len(supplier) == 0:
-        print(f"Error: {sdf_file} file could not be read or is empty.") 
-        return
-
-    mol = supplier[0]
-    if mol is None:
-        print(f"Error: Molecule could not be read from SDF file.") 
-        return
-
-    # Generate and optimize 3D coordinates
-    mol = Chem.AddHs(mol)  # Add hydrogens 
-    AllChem.EmbedMolecule(mol, AllChem.ETKDG())  # Generate 3D coordinates 
-    if optimize:
-        AllChem.MMFFOptimizeMolecule(mol)  # Optimize geometry 
-
-    atoms = mol.GetAtoms()
-    bonds = mol.GetBonds()
-
-    # Create MOL2 header
-    mol2_data = f"@<TRIPOS>MOLECULE\n{mol_name}\n"
-    mol2_data += f"{mol.GetNumAtoms()} {mol.GetNumBonds()} 0 0 0\nSMALL\nUSER_CHARGES\n\n"
-
-    # Add atom information
-    mol2_data += "@<TRIPOS>ATOM\n"
-    for atom in atoms:
-        idx = atom.GetIdx() + 1
-        pos = mol.GetConformer().GetAtomPosition(atom.GetIdx())
-        atom_type = atom.GetSymbol() # Modify this for more advanced atom types. 
-        mol2_data += f"{idx} {atom_type}{idx} {pos.x:.4f} {pos.y:.4f} {pos.z:.4f} {atom_type} {1} \n"
-
-    # Add bond information
-    mol2_data += "@<TRIPOS>BOND\n"
-    for i, bond in enumerate(bonds):
-        bond_type = bond.GetBondType()
-        if bond_type == Chem.rdchem.BondType.SINGLE:
-            bond_type = "1"
-        elif bond_type == Chem.rdchem.BondType.DOUBLE:
-            bond_type = "2"
-        elif bond_type == Chem.rdchem.BondType.TRIPLE:
-            bond_type = "3"
-        elif bond_type == Chem.rdchem.BondType.AROMATIC:
-            bond_type = "ar"
-
-        start = bond.GetBeginAtomIdx() + 1
-        end = bond.GetEndAtomIdx() + 1
-        mol2_data += f"{i+1} {start} {end} {bond_type}\n"
-
-    with open(mol2_filepath, "w") as f:
-        f.write(mol2_data)
+    logger.info('Converting protein/ligand to mol2 format... Done.')
 
 def get_pocket_coords(args, logger):
     logger.info('Getting pocket coordinates...')
@@ -199,6 +151,139 @@ def get_pocket_coords(args, logger):
     #logger.info(f'Pocket center: {pocket_center}, Pocket size: {pocket_size}')
     logger.info('Getting pocket coordinates... Done.')
     return pocket_center, pocket_size, min_coords, max_coords
+
+def write_gold_res_file(args, logger):
+    
+    logger.info('Writing gold res file...')
+    # create a PDBParser object
+    parser = PDBParser()
+
+    # parse the PDB file
+    structure = parser.get_structure("protein", args.pocket_pdb)
+
+    # get the first model of the structure
+    model = structure[0]
+
+    # get the chains
+    chains = list(model.get_chains())
+
+    # loop over the residues in the chain
+    res_list = []
+    for chain in chains:
+        for residue in chain:
+            # get the residue number and name
+            res_num = residue.get_id()[1]
+            res_name = residue.get_resname()
+            # print the residue number and name
+            res_list.append("{}{}".format(res_name, res_num))
+
+    res_list = ' '.join(res_list)
+
+    res_list_path = os.path.join(args.outfolder_gold,"res_list.txt")
+
+    with open(res_list_path, "w") as f:
+        f.write(res_list)
+
+    res_file_path = os.path.join(args.outfolder_gold,"res_file.txt")
+
+    with open(res_list_path, 'r') as input_file, open(res_file_path, 'w') as output_file:
+        for line in input_file:
+            while len(line) > 200:
+                split_index = line.rfind(' ', 0, 200)
+                output_file.write(line[:split_index] + '\n')
+                line = line[split_index+1:]
+            output_file.write(line)
+
+    with open(res_file_path, 'r+') as file:
+        original_content = file.read()
+        file.seek(0, 0)  # move the file pointer to the beginning of the file
+        file.write('> <Gold.Protein.ActiveResidues>\n' + original_content)  
+
+    logger.info('Writing gold res file... Done.')
+
+def write_gold_conf_file(args, logger):
+    logger.info('Writing gold conf file...')
+
+    conf_in = f"""
+  GOLD CONFIGURATION FILE
+
+  AUTOMATIC SETTINGS
+autoscale = 1
+
+  POPULATION
+popsiz = auto
+select_pressure = auto
+n_islands = auto
+maxops = auto
+niche_siz = auto
+
+  GENETIC OPERATORS
+pt_crosswt = auto
+allele_mutatewt = auto
+migratewt = auto
+
+  FLOOD FILL
+do_cavity = 1
+cavity_file = {os.path.join(args.outfolder_gold,"res_file.txt")}
+floodfill_center = list_of_residues
+
+  DATA FILES
+ligand_data_file {args.ligand_sdf} 20
+param_file = DEFAULT
+set_ligand_atom_types = 0
+set_protein_atom_types = 0
+directory = output
+tordist_file = DEFAULT
+make_subdirs = 0
+save_lone_pairs = 1
+fit_points_file = fit_pts.mol2
+read_fitpts = 0
+
+  FLAGS
+internal_ligand_h_bonds = 0
+flip_free_corners = 0
+match_ring_templates = 0
+flip_amide_bonds = 0
+flip_planar_n = 1 flip_ring_NRR flip_ring_NHR
+flip_pyramidal_n = 0
+rotate_carboxylic_oh = flip
+use_tordist = 1
+postprocess_bonds = 1
+rotatable_bond_override_file = DEFAULT
+solvate_all = 1
+
+  TERMINATION
+early_termination = 1
+n_top_solutions = 3
+rms_tolerance = 1.5
+
+  CONSTRAINTS
+force_constraints = 0
+
+  COVALENT BONDING
+covalent = 0
+
+  SAVE OPTIONS
+save_score_in_file = 1
+save_protein_torsions = 1
+directory = {os.path.join(args.outfolder_gold,'output')}
+
+  FITNESS FUNCTION SETTINGS
+initial_virtual_pt_match_max = 3
+relative_ligand_energy = 0
+gold_fitfunc_path = plp
+score_param_file = DEFAULT
+
+  PROTEIN DATA
+protein_datafile = {args.receptor_pdb}
+
+
+    """
+
+    with open(os.path.join(args.outfolder_gold, 'gold.in'), 'w') as f:
+        f.write(conf_in)
+
+    logger.info('Writing gold conf file... Done.')
 
 def split_mol(args, logger, tool="smina"):
     logger.info('Splitting docked poses into individual files...')
@@ -240,7 +325,7 @@ def make_complex(args, logger, tool="smina"):
     logger.info('Making complex...')
 
     if tool == "smina":
-        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=False)
+        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=True)
         if receptor is None:
             raise RuntimeError(f"Failed to load receptor from PDB: {args.receptor_pdb}")
 
@@ -260,7 +345,7 @@ def make_complex(args, logger, tool="smina"):
             Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_smina, f"complex_{i}.pdb"))
 
     elif tool == "ledock":
-        receptor = Chem.MolFromPDBFile(args.lepro_pdb, removeHs=False, sanitize=False)
+        receptor = Chem.MolFromPDBFile(args.lepro_pdb, removeHs=False, sanitize=True)
         if receptor is None:
             raise RuntimeError(f"Failed to load receptor from PDB: {args.lepro_pdb}")
 
@@ -375,10 +460,19 @@ def run_gd3(args, logger):
     # Make complex
     #make_complex(args, logger, tool="gd3")
 
+def run_gold(args, logger):
+    logger.info('Running gold...')
+
+    write_gold_res_file(args, logger)
+
+    write_gold_conf_file(args, logger)
+
+    subprocess.call(f"{args.gold_path} {os.path.join(args.outfolder_gold, 'gold.in')}", shell=True)
+
 def consensus_dock(args, logger):
     # Convert receptor pdb to pdbqt format
-    args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
-    pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+    #args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
+    #pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
 
     # Get stem from file name of args.ligand_sdf
     sdf_path = Path(args.ligand_sdf)
@@ -386,7 +480,11 @@ def consensus_dock(args, logger):
     args.ligand_mol2 = os.path.join(args.outfolder_input, sdf_stem + '.mol2')
 
     # Convert ligand sdf to mol2
-    sdf_to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2)
+    to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2, logger)
+
+    # Convert protein pdb to protein mol2
+    args.receptor_mol2 = os.path.join(args.outfolder_input, 'receptor.mol2')
+    to_mol2(args.receptor_pdb, 'PRO', args.receptor_mol2, logger)
 
     # Get pocket coordinates
     pocket_center, pocket_size, min_coords, max_coords = get_pocket_coords(args, logger)
@@ -398,14 +496,17 @@ def consensus_dock(args, logger):
     args.max_coords = max_coords
 
     # Run smina docking
-    run_smina(args, logger)
+    #run_smina(args, logger)
 
     # Run LeDock docking
-    args.lepro_pdb = lepro(args, logger)
-    run_ledock(args, logger)
+    #args.lepro_pdb = lepro(args, logger)
+    #run_ledock(args, logger)
 
     # Run GalaxyDock3 docking
-    run_gd3(args, logger)
+    #run_gd3(args, logger)
+
+    # Run gold docking
+    run_gold(args, logger)
 
 def main():
     # Initialize argument parser
@@ -414,9 +515,10 @@ def main():
     )
 
     parser.add_argument('--outfolder', type=str, help='Base output directory (default: current directory)')
-    parser.add_argument('--smina_path', type=str, default=False, help='Path to Smina executable (default: smina)')
-    parser.add_argument('--ledock_path', type=str, default=False, help='Path to LeDock executable (default: ledock)')
-    parser.add_argument('--lepro_path', type=str, default='lepro', help='Path to lepro executable (default: lepro)')
+    parser.add_argument('--smina_path', type=str, default=False, help='Path to Smina executable')
+    parser.add_argument('--ledock_path', type=str, default=False, help='Path to LeDock executable')
+    parser.add_argument('--lepro_path', type=str, default='lepro', help='Path to lepro executable')
+    parser.add_argument('--gold_path', type=str, default=False, help='Path to gold executable')
     parser.add_argument('--gd3_path', type=str, help='Path to GalaxyDock3 directory', default=False)
     parser.add_argument('--pH', type=float, default=7.4, help='pH value for adding missing hydrogens (default: 7.4)')
     parser.add_argument('--receptor_pdb', type=str, help='Path to receptor PDB file')
@@ -446,6 +548,10 @@ def main():
     # Create output directory for gd3 within outfolder
     os.makedirs(os.path.join(args.outfolder, 'gd3'), exist_ok=False)
     args.outfolder_gd3 = os.path.join(args.outfolder, 'gd3')
+
+    # Create output directory for gold within outfolder
+    os.makedirs(os.path.join(args.outfolder, 'gold'), exist_ok=False)
+    args.outfolder_gold = os.path.join(args.outfolder, 'gold')
 
     # Timestamp for job ID
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
