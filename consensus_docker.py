@@ -21,6 +21,58 @@ warnings.filterwarnings("ignore")
 ob_log_handler = pybel.ob.OBMessageHandler()
 pybel.ob.obErrorLog.SetOutputLevel(0)
 
+
+
+
+def dock_analysis(csv_path, cutoff_value,output_filename ):
+    csv_files= [file for file in os.listdir(csv_path) if file.endswith('.sdf')] # Changed to .sdf for Smina
+    dfs= {}
+    df_list = []
+    for file in csv_files:
+        file_path = os.path.join(csv_path, file)
+        try:
+            molecules = list(pybel.readfile("sdf", file_path))
+            if not molecules:
+                print(f"Uyarı: Boş veya okunamayan SDF dosyası: {file_path}")
+                continue
+            records = []
+            for molecule in molecules:
+                # Assuming each molecule has a 'SMINA_SCORE' property
+                if 'SMINA_SCORE' in molecule.data:
+                    records.append({'Ligand': molecule.title, 'SMINA_Score': float(molecule.data['SMINA_SCORE'])})
+            if records:
+                df = pd.DataFrame(records)
+                df.sort_values(by="SMINA_Score", ascending=True, inplace=True)
+                df.drop_duplicates(subset=['Ligand'], inplace=True)
+                df = df[df['SMINA_Score'] <= cutoff_value]
+                dfs[file] = df
+                df_list.append(df)
+            else:
+                print(f"Uyarı: '{file_path}' içinde 'SMINA_SCORE' bilgisi bulunamadı.")
+        except Exception as e:
+            print(f"Hata: '{file_path}' okunurken bir sorun oluştu: {e}")
+
+    non_empty_df_list = [df for df in df_list if not df.empty]
+
+    if non_empty_df_list:
+        merged_df = non_empty_df_list[0].copy()
+
+        for i in range(1, len(non_empty_df_list)):
+            suffix = f'_{i}'
+            non_empty_df_list[i] = non_empty_df_list[i].copy()
+            non_empty_df_list[i].columns = [f'{col}{suffix}' for col in non_empty_df_list[i].columns]
+            merged_df = pd.merge(merged_df, non_empty_df_list[i], left_on='Ligand', right_on=f'Ligand{suffix}', how='inner')
+            merged_df.drop(columns=[f'Ligand{suffix}'], inplace=True)
+        merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
+    else:
+        merged_df = pd.DataFrame()
+
+    output_path = os.path.join(csv_path, f'{output_filename}.csv')
+    merged_df.to_csv(output_path, index=False)
+
+    return merged_df
+
+
 def setup_logging(log_file):
     """
     Configure and return a logger that writes to both console and file.
@@ -375,6 +427,18 @@ def run_smina(args, logger):
 
     # Make complex
     make_complex(args, logger, tool="smina")
+
+    # Analyze Smina results
+    logger.info('Starting SMINA analysis...')
+    smina_output_path = args.outfolder_smina
+    analysis_output_filename = 'smina_analysis'
+    smina_analysis_df = dock_analysis(smina_output_path, args.cutoff_value, analysis_output_filename)
+    logger.info(f'SMINA analysis completed. Results saved to {os.path.join(smina_output_path, f"{analysis_output_filename}.csv")}')
+    if not smina_analysis_df.empty:
+        logger.info('Top scoring ligands from SMINA:')
+        logger.info(smina_analysis_df.head().to_string())
+    else:
+        logger.info('No ligands found below the cutoff value in SMINA results.')
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -527,7 +591,7 @@ def main():
     parser.add_argument('--exhaustiveness', type=int, default=12, help='Exhaustiveness value for Smina (default: 12)')
     parser.add_argument('--num_modes', type=int, default=20, help='Number of modes for Smina (default: 20)')
     parser.add_argument('--num_threads', type=int, default=1, help='Number of threads for Smina (default: 1)')
-
+    parser.add_argument('--cutoff_value', type=float, default=-7.0, help='SMINA_Score cutoff value for analysis (default: -7.0)')
     args = parser.parse_args()
     
     # Create output directory if it doesn't exist
