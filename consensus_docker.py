@@ -21,54 +21,6 @@ warnings.filterwarnings("ignore")
 ob_log_handler = pybel.ob.OBMessageHandler()
 pybel.ob.obErrorLog.SetOutputLevel(0)
 
-def dock_analysis(csv_path, cutoff_value, output_filename ):
-    csv_files= [file for file in os.listdir(csv_path) if file.endswith('.sdf')] # Changed to .sdf for Smina
-    dfs= {}
-    df_list = []
-    for file in csv_files:
-        file_path = os.path.join(csv_path, file)
-        try:
-            molecules = list(pybel.readfile("sdf", file_path))
-            if not molecules:
-                print(f"Uyarı: Boş veya okunamayan SDF dosyası: {file_path}")
-                continue
-            records = []
-            for molecule in molecules:
-                # Assuming each molecule has a 'SMINA_SCORE' property
-                if 'SMINA_SCORE' in molecule.data:
-                    records.append({'Ligand': molecule.title, 'SMINA_Score': float(molecule.data['SMINA_SCORE'])})
-            if records:
-                df = pd.DataFrame(records)
-                df.sort_values(by="SMINA_Score", ascending=True, inplace=True)
-                df.drop_duplicates(subset=['Ligand'], inplace=True)
-                df = df[df['SMINA_Score'] <= cutoff_value]
-                dfs[file] = df
-                df_list.append(df)
-            else:
-                print(f"Uyarı: '{file_path}' içinde 'SMINA_SCORE' bilgisi bulunamadı.")
-        except Exception as e:
-            print(f"Hata: '{file_path}' okunurken bir sorun oluştu: {e}")
-
-    non_empty_df_list = [df for df in df_list if not df.empty]
-
-    if non_empty_df_list:
-        merged_df = non_empty_df_list[0].copy()
-
-        for i in range(1, len(non_empty_df_list)):
-            suffix = f'_{i}'
-            non_empty_df_list[i] = non_empty_df_list[i].copy()
-            non_empty_df_list[i].columns = [f'{col}{suffix}' for col in non_empty_df_list[i].columns]
-            merged_df = pd.merge(merged_df, non_empty_df_list[i], left_on='Ligand', right_on=f'Ligand{suffix}', how='inner')
-            merged_df.drop(columns=[f'Ligand{suffix}'], inplace=True)
-        merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
-    else:
-        merged_df = pd.DataFrame()
-
-    output_path = os.path.join(csv_path, f'{output_filename}.csv')
-    merged_df.to_csv(output_path, index=False)
-
-    return merged_df
-
 def setup_logging(log_file):
     """
     Configure and return a logger that writes to both console and file.
@@ -434,7 +386,34 @@ def make_complex(args, logger, tool="smina"):
             Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_gold, f"complex_{i}.pdb"))
     
     logger.info('Making complex... Done.')
-            
+
+def parse_smina(args, logger):
+    logger.info('Parsing smina output...')
+
+    # Find out the .sdf output files in args.outfolder_smina, with the following pattern:
+    # out_{pose_number}.sdf
+    sdf_files = glob.glob(os.path.join(args.outfolder_smina, 'out_*.sdf'))
+    sdf_files = [file for file in sdf_files if file.endswith('.sdf')]
+    num_ligands = len(sdf_files)
+    if num_ligands == 0:
+        raise RuntimeError(f"No valid SDF files found in directory: {args.outfolder_smina}")
+    logger.info(f'Found {num_ligands} SDF files in {args.outfolder_smina}')
+    # Create a dataframe to store the results
+    results = pd.DataFrame(columns=['Pose', 'SMINA_Score'])
+    for i in range(1, num_ligands+1):
+        ligand_sdf = os.path.join(args.outfolder_smina, f"out_{i}.sdf")
+        ligand_supplier = Chem.SDMolSupplier(ligand_sdf, removeHs=False)
+        ligands = [m for m in ligand_supplier if m is not None]
+        if not ligands:
+            raise RuntimeError(f"No valid molecules found in SDF file: {ligand_sdf}")
+        ligand = ligands[0]
+        smina_score = float(ligand.GetProp("minimizedAffinity"))
+        results.loc[i-1] = [int(i), smina_score]
+
+    # Save the dataframe to a CSV file in args.outfolder_smina
+    results.to_csv(os.path.join(args.outfolder_smina, 'results.csv'), index=False)
+    logger.info('Parsing smina output... Done.')
+
 def run_smina(args, logger):
     logger.info('Running smina...')
     subprocess.call(f"{args.smina_path} -r {args.receptor_pdbqt} -l {args.ligand_sdf} \
@@ -449,19 +428,9 @@ def run_smina(args, logger):
     # Make complex
     make_complex(args, logger, tool="smina")
 
-    # Analyze Smina results
-    #logger.info('Starting SMINA analysis...')
-    #analysis_output_filename = 'smina_analysis'
-    #smina_analysis_df = dock_analysis(args.outfolder_smina, args.cutoff_value, analysis_output_filename)
-    #logger.info(f'SMINA analysis completed. Results saved to {os.path.join(args.outfolder_smina, f"{analysis_output_filename}.csv")}')
-    #if not smina_analysis_df.empty:
-    #    logger.info('Top scoring ligands from SMINA:')
-    #    logger.info(smina_analysis_df.head().to_string())
-    #else:
-    #    logger.info('No ligands found below the cutoff value in SMINA results.')
-
-
-    
+    # Parse smina output
+    parse_smina(args, logger)
+ 
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
 
