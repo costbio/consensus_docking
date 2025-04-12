@@ -21,10 +21,7 @@ warnings.filterwarnings("ignore")
 ob_log_handler = pybel.ob.OBMessageHandler()
 pybel.ob.obErrorLog.SetOutputLevel(0)
 
-
-
-
-def dock_analysis(csv_path, cutoff_value,output_filename ):
+def dock_analysis(csv_path, cutoff_value, output_filename ):
     csv_files= [file for file in os.listdir(csv_path) if file.endswith('.sdf')] # Changed to .sdf for Smina
     dfs= {}
     df_list = []
@@ -71,7 +68,6 @@ def dock_analysis(csv_path, cutoff_value,output_filename ):
     merged_df.to_csv(output_path, index=False)
 
     return merged_df
-
 
 def setup_logging(log_file):
     """
@@ -411,6 +407,31 @@ def make_complex(args, logger, tool="smina"):
             
             docked_complex = Chem.CombineMols(receptor, ligand)
             Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_ledock, f"complex_{i}.pdb"))
+
+    elif tool=="gold":
+        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=True)
+        if receptor is None:
+            raise RuntimeError(f"Failed to load receptor from PDB: {args.receptor_pdb}")
+
+        # Find out how many ligands we have by finding out how many .sdf files with following naming pattern:
+        # gold_soln_{ligand_name}_m1_{pose_number}.sdf
+        sdf_files = glob.glob(os.path.join(args.outfolder_gold, 'output', 'gold_soln_*.sdf')) 
+        sdf_files = [file for file in sdf_files if file.endswith('.sdf')]
+        num_ligands = len(sdf_files)
+        for i in range(1, num_ligands+1):
+            # Find out base filename of args.ligand_sdf, without its extension
+            ligand_file = os.path.basename(args.ligand_sdf)
+            ligand_file_stem = os.path.splitext(ligand_file)[0]
+            # Construct the ligand sdf file name
+            ligand_sdf = os.path.join(args.outfolder_gold, 'output', f"gold_soln_{ligand_file_stem}_m1_{i}.sdf")
+            ligand_supplier = Chem.SDMolSupplier(ligand_sdf, removeHs=False)
+            ligands = [m for m in ligand_supplier if m is not None]
+            if not ligands:
+                raise RuntimeError(f"No valid molecules found in SDF file: {ligand_file}")
+            
+            ligand = ligands[0]
+            docked_complex = Chem.CombineMols(receptor, ligand)
+            Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_gold, f"complex_{i}.pdb"))
     
     logger.info('Making complex... Done.')
             
@@ -429,16 +450,17 @@ def run_smina(args, logger):
     make_complex(args, logger, tool="smina")
 
     # Analyze Smina results
-    logger.info('Starting SMINA analysis...')
-    smina_output_path = args.outfolder_smina
-    analysis_output_filename = 'smina_analysis'
-    smina_analysis_df = dock_analysis(smina_output_path, args.cutoff_value, analysis_output_filename)
-    logger.info(f'SMINA analysis completed. Results saved to {os.path.join(smina_output_path, f"{analysis_output_filename}.csv")}')
-    if not smina_analysis_df.empty:
-        logger.info('Top scoring ligands from SMINA:')
-        logger.info(smina_analysis_df.head().to_string())
-    else:
-        logger.info('No ligands found below the cutoff value in SMINA results.')
+    #logger.info('Starting SMINA analysis...')
+    #analysis_output_filename = 'smina_analysis'
+    #smina_analysis_df = dock_analysis(args.outfolder_smina, args.cutoff_value, analysis_output_filename)
+    #logger.info(f'SMINA analysis completed. Results saved to {os.path.join(args.outfolder_smina, f"{analysis_output_filename}.csv")}')
+    #if not smina_analysis_df.empty:
+    #    logger.info('Top scoring ligands from SMINA:')
+    #    logger.info(smina_analysis_df.head().to_string())
+    #else:
+    #    logger.info('No ligands found below the cutoff value in SMINA results.')
+
+
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -533,10 +555,15 @@ def run_gold(args, logger):
 
     subprocess.call(f"{args.gold_path} {os.path.join(args.outfolder_gold, 'gold.in')}", shell=True)
 
+    make_complex(args, logger, tool="gold")
+
+    logger.info('Running gold... Done.')
+
 def consensus_dock(args, logger):
     # Convert receptor pdb to pdbqt format
-    #args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
-    #pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+    logger.info('Starting consensus_dock...')
+    args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
+    pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
 
     # Get stem from file name of args.ligand_sdf
     sdf_path = Path(args.ligand_sdf)
@@ -560,17 +587,19 @@ def consensus_dock(args, logger):
     args.max_coords = max_coords
 
     # Run smina docking
-    #run_smina(args, logger)
+    run_smina(args, logger)
 
     # Run LeDock docking
-    #args.lepro_pdb = lepro(args, logger)
-    #run_ledock(args, logger)
+    args.lepro_pdb = lepro(args, logger)
+    run_ledock(args, logger)
 
     # Run GalaxyDock3 docking
     #run_gd3(args, logger)
 
     # Run gold docking
     run_gold(args, logger)
+
+    logger.info('########## Finished consensus_docker.py #########')
 
 def main():
     # Initialize argument parser
