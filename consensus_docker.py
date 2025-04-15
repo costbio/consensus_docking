@@ -4,7 +4,7 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from logging.handlers import RotatingFileHandler
-
+import re 
 #import nglview as nv
 from openbabel import pybel, openbabel
 
@@ -414,6 +414,40 @@ def parse_smina(args, logger):
     results.to_csv(os.path.join(args.outfolder_smina, 'results.csv'), index=False)
     logger.info('Parsing smina output... Done.')
 
+def parse_ledock(args, logger):
+    logger.info('Parsing ledock output...')
+    # Find out the .sdf output files in args.outfolder_smina, with the following pattern:
+    # #out_{pose_number}.dok
+
+    start_pattern = r"Score:"
+    end_pattern = r"kcal/mol"
+    scores = []
+    missing_scores = []
+
+    dok_files:glob.glob = glob.glob(os.path.join(args.outfolder_ledock, 'out_*.dok'))
+    dok_files = [file for file in dok_files if file.endswith('.dok')]
+
+    if not dok_files:
+        logger.error(f'No .dok files found in the specified folder: {args.input_folder}')
+        return None
+
+    logger.info(f'Found {len(dok_files)} .dok files.')
+
+    for file_name in dok_files:
+        with open(file_name, "r") as file:
+            contents = file.read()
+            match = re.search(start_pattern + r"(.*?)" + end_pattern, contents)
+            if match:
+                scores.append(match.group(1).strip())
+            else:
+                scores.append(None)  # Eşleşme yoksa None ekle
+                missing_scores.append(file_name)  # Skor bulunamayan dosya adını ekle
+    results=pd.DataFrame({'Pose': [int(i) for i in range(1, len(dok_files)+1)], 'LeDock_Score': scores})
+    # Save the dataframe to a CSV file in args.outfolder_ledock
+    results.to_csv(os.path.join(args.outfolder_ledock, 'results.csv'), index=False)
+    logger.info('Parsing ledock output... Done.') 
+
+
 def run_smina(args, logger):
     logger.info('Running smina...')
     subprocess.call(f"{args.smina_path} -r {args.receptor_pdbqt} -l {args.ligand_sdf} \
@@ -430,6 +464,7 @@ def run_smina(args, logger):
 
     # Parse smina output
     parse_smina(args, logger)
+    
  
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -478,6 +513,9 @@ def run_ledock(args, logger):
 
     # Make complex
     make_complex(args, logger, tool="ledock")
+
+    # Parse ledock output
+    parse_ledock(args, logger)
 
 def run_gd3(args, logger):
     logger.info('Running gd3...')
@@ -556,11 +594,11 @@ def consensus_dock(args, logger):
     args.max_coords = max_coords
 
     # Run smina docking
-    run_smina(args, logger)
+    #run_smina(args, logger)
 
     # Run LeDock docking
-    args.lepro_pdb = lepro(args, logger)
-    run_ledock(args, logger)
+    #args.lepro_pdb = lepro(args, logger)
+    #run_ledock(args, logger)
 
     # Run GalaxyDock3 docking
     #run_gd3(args, logger)
