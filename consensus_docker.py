@@ -421,10 +421,8 @@ def parse_ledock(args, logger):
 
     start_pattern = r"Score:"
     end_pattern = r"kcal/mol"
-    scores = []
-    missing_scores = []
 
-    dok_files:glob.glob = glob.glob(os.path.join(args.outfolder_ledock, 'out_*.dok'))
+    dok_files = glob.glob(os.path.join(args.outfolder_ledock, 'out_*.dok'))
     dok_files = [file for file in dok_files if file.endswith('.dok')]
 
     if not dok_files:
@@ -433,20 +431,67 @@ def parse_ledock(args, logger):
 
     logger.info(f'Found {len(dok_files)} .dok files.')
 
+    # Start a dataframe to store results
+    df = pd.DataFrame(columns=['Pose', 'LeDock_Score'])
     for file_name in dok_files:
+        # Find out the pose number from the file name
+        pose_number = int(os.path.basename(file_name).split('_')[1].split('.')[0])
         with open(file_name, "r") as file:
             contents = file.read()
             match = re.search(start_pattern + r"(.*?)" + end_pattern, contents)
             if match:
-                scores.append(match.group(1).strip())
+                score = float(match.group(1).strip())
             else:
-                scores.append(None)  # Eşleşme yoksa None ekle
-                missing_scores.append(file_name)  # Skor bulunamayan dosya adını ekle
-    results=pd.DataFrame({'Pose': [int(i) for i in range(1, len(dok_files)+1)], 'LeDock_Score': scores})
+                logger.error(f"Score not found in {file_name}")
+                continue
+
+        # Append the results to the dataframe
+        df.loc[len(df)] = [pose_number, score]
+
+    # Sort the dataframe by score in descending order
+    results = df.sort_values(by='LeDock_Score', ascending=True)
+
     # Save the dataframe to a CSV file in args.outfolder_ledock
     results.to_csv(os.path.join(args.outfolder_ledock, 'results.csv'), index=False)
     logger.info('Parsing ledock output... Done.') 
 
+def parse_gold(args, logger):
+    logger.info('Parsing gold output...')
+    
+    # Find out the file ending with .rnk in args.outfolder_gold
+    rnk_file = glob.glob(os.path.join(args.outfolder_gold, 'output', '*.rnk'))
+    rnk_file = rnk_file[0]
+
+    if not rnk_file:
+        logger.error(f'No .rnk files found in the specified folder: {args.outfolder_gold}')
+        return None
+
+    with open(rnk_file, "r") as file:
+        lines = file.readlines()
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            # If the first element in parts is "Mol"
+            if parts[0] == "Mol":
+                col_names = ["Pose", parts[2], parts[3], parts[4], parts[5], parts[6], parts[7], parts[8], parts[9]]
+                df = pd.DataFrame(columns=col_names)
+                continue
+
+            # If the first element can be converted to integer
+            try:
+                pose_number = int(parts[0])
+                row = [pose_number] + [float(x) for x in parts[1:]]
+                df.loc[len(df)] = row
+                
+            except ValueError:
+                continue
+        
+    # Sort the dataframe by score in descending order
+    results = df.sort_values(by=col_names[1], ascending=False)
+    # Save the dataframe to a CSV file in args.outfolder_gold
+    results.to_csv(os.path.join(args.outfolder_gold, 'results.csv'), index=False)
+    logger.info('Parsing gold output... Done.')
 
 def run_smina(args, logger):
     logger.info('Running smina...')
@@ -465,7 +510,6 @@ def run_smina(args, logger):
     # Parse smina output
     parse_smina(args, logger)
     
- 
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
 
@@ -564,6 +608,9 @@ def run_gold(args, logger):
 
     make_complex(args, logger, tool="gold")
 
+    # Parse gold output
+    parse_gold(args, logger)
+
     logger.info('Running gold... Done.')
 
 def consensus_dock(args, logger):
@@ -597,8 +644,8 @@ def consensus_dock(args, logger):
     #run_smina(args, logger)
 
     # Run LeDock docking
-    #args.lepro_pdb = lepro(args, logger)
-    #run_ledock(args, logger)
+    args.lepro_pdb = lepro(args, logger)
+    run_ledock(args, logger)
 
     # Run GalaxyDock3 docking
     #run_gd3(args, logger)
