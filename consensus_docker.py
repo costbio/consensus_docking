@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from logging.handlers import RotatingFileHandler
 import re 
+from prody import *
 #import nglview as nv
 from openbabel import pybel, openbabel
 
@@ -493,6 +494,69 @@ def parse_gold(args, logger):
     results.to_csv(os.path.join(args.outfolder_gold, 'results.csv'), index=False)
     logger.info('Parsing gold output... Done.')
 
+
+
+def calculate_rmsd(args, logger):
+    logger.info('Calculating rmsd...')
+    rmsd_result=[]
+
+    
+    ledock_out = glob.glob(os.path.join(args.outfolder_ledock, "complex_*.pdb"))
+    smina_out = glob.glob(os.path.join(args.outfolder_smina, "complex_*.pdb"))
+    gold_out = glob.glob(os.path.join(args.outfolder_gold, "complex_*.pdb"))
+
+
+    pose_zip= list(zip(ledock_out, gold_out,smina_out))
+
+    for out1 in ledock_out:
+        for out2 in gold_out:
+            if out1.split("/")[-1] == out2.split("/")[-1]:
+                continue
+            pose1 = parsePDB(out1)
+            pose1=pose1.select("hetero and noh")
+            pose2 = parsePDB(out2)
+            pose2=pose2.select("hetero and noh")
+            rmsd = calcRMSD(pose1, pose2)
+            rmsd_result.append(rmsd)
+
+      
+    for out3 in ledock_out:
+        for out4 in smina_out:
+            if out3.split("/")[-1] == out4.split("/")[-1]:
+                continue
+            pose3 = parsePDB(out3)
+            pose3=pose3.select("hetero and noh")
+            pose4 = parsePDB(out4)
+            pose4=pose4.select("hetero and noh")
+            rmsd2 = calcRMSD(pose3, pose4)
+            rmsd_result.append(rmsd2)
+
+            
+    for out5 in gold_out:
+        for out6 in smina_out:
+            if out5.split("/")[-1] == out6.split("/")[-1]:
+                continue
+            pose5 = parsePDB(out5)
+            pose5=pose5.select("hetero and noh")
+            pose6 = parsePDB(out6)
+            pose6=pose6.select("hetero and noh")
+            rmsd3 = calcRMSD(pose5, pose6)
+            rmsd_result.append(rmsd3)
+
+
+    # Save the dataframe to a CSV file in args.outfolder
+    #make df
+    rmsd_result = pd.DataFrame(rmsd_result)
+    #make cols for each rmsd result for file
+    
+
+    rmsd_result.to_csv(os.path.join(args.outfolder, 'rmsd_result.csv'), index=False)
+
+
+    logger.info('Calculating rmsd... Done.')
+
+
+    
 def run_smina(args, logger):
     logger.info('Running smina...')
     subprocess.call(f"{args.smina_path} -r {args.receptor_pdbqt} -l {args.ligand_sdf} \
@@ -641,7 +705,7 @@ def consensus_dock(args, logger):
     args.max_coords = max_coords
 
     # Run smina docking
-    #run_smina(args, logger)
+    run_smina(args, logger)
 
     # Run LeDock docking
     args.lepro_pdb = lepro(args, logger)
@@ -652,6 +716,10 @@ def consensus_dock(args, logger):
 
     # Run gold docking
     run_gold(args, logger)
+
+    # calculate rmsd
+    calculate_rmsd(args, logger)
+
 
     logger.info('########## Finished consensus_docker.py #########')
 
