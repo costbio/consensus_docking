@@ -517,7 +517,7 @@ def calculate_rmsd(args, logger):
             pose2 = parsePDB(out2)
             pose2=pose2.select("hetero and noh")
             rmsd = calcRMSD(pose1, pose2)
-            rmsd_result.append(rmsd)
+            rmsd_result.append({'Comparison': 'LeDock vs. Gold', 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
 
       
     for out3 in ledock_out:
@@ -529,8 +529,7 @@ def calculate_rmsd(args, logger):
             pose4 = parsePDB(out4)
             pose4=pose4.select("hetero and noh")
             rmsd2 = calcRMSD(pose3, pose4)
-            rmsd_result.append(rmsd2)
-
+            rmsd_result.append({'Comparison': 'LeDock vs. Smina', 'File1': out3.split("/")[-1], 'File2': out4.split("/")[-1], 'RMSD': rmsd2})
             
     for out5 in gold_out:
         for out6 in smina_out:
@@ -541,15 +540,12 @@ def calculate_rmsd(args, logger):
             pose6 = parsePDB(out6)
             pose6=pose6.select("hetero and noh")
             rmsd3 = calcRMSD(pose5, pose6)
-            rmsd_result.append(rmsd3)
-
+            rmsd_result.append({'Comparison': 'Gold vs. Smina', 'File1': out5.split("/")[-1], 'File2': out6.split("/")[-1], 'RMSD': rmsd3})
 
     # Save the dataframe to a CSV file in args.outfolder
-    #make df
+    #make df out of rmsd results
     rmsd_result = pd.DataFrame(rmsd_result)
-    #make cols for each rmsd result for file
     
-
     rmsd_result.to_csv(os.path.join(args.outfolder, 'rmsd_result.csv'), index=False)
 
 
