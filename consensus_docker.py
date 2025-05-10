@@ -520,9 +520,6 @@ def calculate_rmsd(args, logger):
             pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
             score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['Score'].values[0]
 
-            if out1.split("/")[-1] == out2.split("/")[-1]:
-                continue
-
             pose1 = parsePDB(out1)
             pose1=pose1.select("hetero and noh")
             pose2 = parsePDB(out2)
@@ -539,8 +536,6 @@ def calculate_rmsd(args, logger):
             pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
             score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
 
-            if out1.split("/")[-1] == out2.split("/")[-1]:
-                continue
             pose1 = parsePDB(out1)
             pose1=pose1.select("hetero and noh")
             pose2 = parsePDB(out2)
@@ -557,8 +552,6 @@ def calculate_rmsd(args, logger):
             pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
             score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
 
-            if out1.split("/")[-1] == out2.split("/")[-1]:
-                continue
             pose1 = parsePDB(out1)
             pose1=pose1.select("hetero and noh")
             pose2 = parsePDB(out2)
