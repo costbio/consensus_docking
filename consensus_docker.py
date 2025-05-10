@@ -518,7 +518,7 @@ def calculate_rmsd(args, logger):
 
         for out2 in gold_out:
             pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-            score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['GOLD_Score'].values[0]
+            score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['Score'].values[0]
 
             if out1.split("/")[-1] == out2.split("/")[-1]:
                 continue
@@ -545,26 +545,33 @@ def calculate_rmsd(args, logger):
             pose1=pose1.select("hetero and noh")
             pose2 = parsePDB(out2)
             pose2=pose2.select("hetero and noh")
-            rmsd2 = calcRMSD(pose1, pose2)
+            rmsd = calcRMSD(pose1, pose2)
             rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd2})
+            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
             
     for out1 in gold_out:
+        pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+        score1 = gold_results[gold_results['Pose'] == int(pose_number1)]['Score'].values[0]
+
         for out2 in smina_out:
+            pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+            score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+
             if out1.split("/")[-1] == out2.split("/")[-1]:
                 continue
             pose1 = parsePDB(out1)
             pose1=pose1.select("hetero and noh")
             pose2 = parsePDB(out2)
             pose2=pose2.select("hetero and noh")
-            rmsd1 = calcRMSD(pose1, pose2)
-            rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 'Score1': score1, 'Score2': score2, 'File1': out5.split("/")[-1], 'File2': out6.split("/")[-1], 'RMSD': rmsd3})
+            rmsd = calcRMSD(pose1, pose2)
+            rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
+            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
 
     # Save the dataframe to a CSV file in args.outfolder
     #make df out of rmsd results
     rmsd_result = pd.DataFrame(rmsd_result)
     
-    rmsd_result.to_csv(os.path.join(args.outfolder, 'rmsd_result.csv'), index=False)
+    rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
 
     logger.info('Calculating rmsd... Done.')
     
