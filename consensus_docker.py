@@ -500,47 +500,65 @@ def calculate_rmsd(args, logger):
     logger.info('Calculating rmsd...')
     rmsd_result=[]
 
-    
+    # Define out folders.
     ledock_out = glob.glob(os.path.join(args.outfolder_ledock, "complex_*.pdb"))
     smina_out = glob.glob(os.path.join(args.outfolder_smina, "complex_*.pdb"))
     gold_out = glob.glob(os.path.join(args.outfolder_gold, "complex_*.pdb"))
 
+    # Load results.csv from each out folder
+    ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
+    smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv'))
+    gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv'))
 
     pose_zip= list(zip(ledock_out, gold_out,smina_out))
 
     for out1 in ledock_out:
+        pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+        score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
+
         for out2 in gold_out:
+            pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+            score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['GOLD_Score'].values[0]
+
+            if out1.split("/")[-1] == out2.split("/")[-1]:
+                continue
+
+            pose1 = parsePDB(out1)
+            pose1=pose1.select("hetero and noh")
+            pose2 = parsePDB(out2)
+            pose2=pose2.select("hetero and noh")
+            rmsd = calcRMSD(pose1, pose2)
+            rmsd_result.append({'Tool1':'LeDock', 'Tool2':'GOLD', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
+            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+
+    for out1 in ledock_out:
+        pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+        score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
+
+        for out2 in smina_out:
+            pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+            score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+
             if out1.split("/")[-1] == out2.split("/")[-1]:
                 continue
             pose1 = parsePDB(out1)
             pose1=pose1.select("hetero and noh")
             pose2 = parsePDB(out2)
             pose2=pose2.select("hetero and noh")
-            rmsd = calcRMSD(pose1, pose2)
-            rmsd_result.append({'Comparison': 'LeDock vs. Gold', 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
-
-      
-    for out3 in ledock_out:
-        for out4 in smina_out:
-            if out3.split("/")[-1] == out4.split("/")[-1]:
-                continue
-            pose3 = parsePDB(out3)
-            pose3=pose3.select("hetero and noh")
-            pose4 = parsePDB(out4)
-            pose4=pose4.select("hetero and noh")
-            rmsd2 = calcRMSD(pose3, pose4)
-            rmsd_result.append({'Comparison': 'LeDock vs. Smina', 'File1': out3.split("/")[-1], 'File2': out4.split("/")[-1], 'RMSD': rmsd2})
+            rmsd2 = calcRMSD(pose1, pose2)
+            rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
+            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd2})
             
-    for out5 in gold_out:
-        for out6 in smina_out:
-            if out5.split("/")[-1] == out6.split("/")[-1]:
+    for out1 in gold_out:
+        for out2 in smina_out:
+            if out1.split("/")[-1] == out2.split("/")[-1]:
                 continue
-            pose5 = parsePDB(out5)
-            pose5=pose5.select("hetero and noh")
-            pose6 = parsePDB(out6)
-            pose6=pose6.select("hetero and noh")
-            rmsd3 = calcRMSD(pose5, pose6)
-            rmsd_result.append({'Comparison': 'Gold vs. Smina', 'File1': out5.split("/")[-1], 'File2': out6.split("/")[-1], 'RMSD': rmsd3})
+            pose1 = parsePDB(out1)
+            pose1=pose1.select("hetero and noh")
+            pose2 = parsePDB(out2)
+            pose2=pose2.select("hetero and noh")
+            rmsd1 = calcRMSD(pose1, pose2)
+            rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 'Score1': score1, 'Score2': score2, 'File1': out5.split("/")[-1], 'File2': out6.split("/")[-1], 'RMSD': rmsd3})
 
     # Save the dataframe to a CSV file in args.outfolder
     #make df out of rmsd results
@@ -548,10 +566,7 @@ def calculate_rmsd(args, logger):
     
     rmsd_result.to_csv(os.path.join(args.outfolder, 'rmsd_result.csv'), index=False)
 
-
     logger.info('Calculating rmsd... Done.')
-
-
     
 def run_smina(args, logger):
     logger.info('Running smina...')
