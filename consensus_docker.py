@@ -411,6 +411,7 @@ def parse_smina(args, logger):
         smina_score = float(ligand.GetProp("minimizedAffinity"))
         results.loc[i-1] = [int(i), smina_score]
 
+
     # Save the dataframe to a CSV file in args.outfolder_smina
     results.to_csv(os.path.join(args.outfolder_smina, 'results.csv'), index=False)
     logger.info('Parsing smina output... Done.')
@@ -506,67 +507,131 @@ def calculate_rmsd(args, logger):
     gold_out = glob.glob(os.path.join(args.outfolder_gold, "complex_*.pdb"))
 
     # Load results.csv from each out folder
-    ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
-    smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv'))
-    gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv'))
+    #ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
+    #smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv'))
+    #gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv'))
 
-    pose_zip= list(zip(ledock_out, gold_out,smina_out))
 
-    for out1 in ledock_out:
-        pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-        score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
+    #pose_zip= list(zip(ledock_out, gold_out,smina_out))
 
-        for out2 in gold_out:
-            pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-            score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['Score'].values[0]
+    #for out1 in ledock_out:
+       # pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+        #score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
 
-            pose1 = parsePDB(out1)
-            pose1=pose1.select("hetero and noh")
-            pose2 = parsePDB(out2)
-            pose2=pose2.select("hetero and noh")
-            rmsd = calcRMSD(pose1, pose2)
-            rmsd_result.append({'Tool1':'LeDock', 'Tool2':'GOLD', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+        #for out2 in gold_out:
+           # pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+            #score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['Score'].values[0]
 
-    for out1 in ledock_out:
-        pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-        score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
+           # pose1 = parsePDB(out1)
+            #pose1=pose1.select("hetero and noh")
+           # pose2 = parsePDB(out2)
+           # pose2=pose2.select("hetero and noh")
+           # rmsd = calcRMSD(pose1, pose2)
+           # rmsd_result.append({'Tool1':'LeDock', 'Tool2':'GOLD', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
+           # 'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
 
-        for out2 in smina_out:
-            pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-            score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+    #for out1 in ledock_out:
+      #  pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+       # score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
 
-            pose1 = parsePDB(out1)
-            pose1=pose1.select("hetero and noh")
-            pose2 = parsePDB(out2)
-            pose2=pose2.select("hetero and noh")
-            rmsd = calcRMSD(pose1, pose2)
-            rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+       # for out2 in smina_out:
+         #   pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+          #  score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+
+           # pose1 = parsePDB(out1)
+          #  pose1=pose1.select("hetero and noh")
+           # pose2 = parsePDB(out2)
+          #  pose2=pose2.select("hetero and noh")
+           # rmsd = calcRMSD(pose1, pose2)
+           # rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
+           # 'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
             
-    for out1 in gold_out:
-        pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-        score1 = gold_results[gold_results['Pose'] == int(pose_number1)]['Score'].values[0]
+    #for out1 in gold_out:
+       # pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+       # score1 = gold_results[gold_results['Pose'] == int(pose_number1)]['Score'].values[0]
 
-        for out2 in smina_out:
-            pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-            score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+        #for out2 in smina_out:
+          #  pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+           # score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
 
-            pose1 = parsePDB(out1)
-            pose1=pose1.select("hetero and noh")
-            pose2 = parsePDB(out2)
-            pose2=pose2.select("hetero and noh")
-            rmsd = calcRMSD(pose1, pose2)
-            rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-            'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+          #  pose1 = parsePDB(out1)
+           # pose1=pose1.select("hetero and noh")
+           # pose2 = parsePDB(out2)
+           # pose2=pose2.select("hetero and noh")
+           # rmsd = calcRMSD(pose1, pose2)
+           # rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
+           # 'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
 
     # Save the dataframe to a CSV file in args.outfolder
     #make df out of rmsd results
-    rmsd_result = pd.DataFrame(rmsd_result)
+    #rmsd_result = pd.DataFrame(rmsd_result)
     
-    rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
+    #rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
 
-    logger.info('Calculating rmsd... Done.')
+    #logger.info('Calculating rmsd... Done.')
+
+    # Load results.csv if available
+    try:
+        ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv')) if ledock_out else None
+    except Exception:
+        ledock_results = None
+    try:
+        smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv')) if smina_out else None
+    except Exception:
+        smina_results = None
+    try:
+        gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv')) if gold_out else None
+    except Exception:
+        gold_results = None
+
+    # LeDock vs GOLD
+    if ledock_out and gold_out and ledock_results is not None and gold_results is not None:
+        for out1 in ledock_out:
+            pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+            score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
+            for out2 in gold_out:
+                pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+                score2 = gold_results[gold_results['Pose'] == int(pose_number2)].iloc[0, 1]
+                pose1 = parsePDB(out1).select("hetero and noh")
+                pose2 = parsePDB(out2).select("hetero and noh")
+                rmsd = calcRMSD(pose1, pose2)
+                rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'GOLD', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2,
+                                    'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+
+    # LeDock vs Smina
+    if ledock_out and smina_out and ledock_results is not None and smina_results is not None:
+        for out1 in ledock_out:
+            pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+            score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
+            for out2 in smina_out:
+                pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+                score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+                pose1 = parsePDB(out1).select("hetero and noh")
+                pose2 = parsePDB(out2).select("hetero and noh")
+                rmsd = calcRMSD(pose1, pose2)
+                rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2,
+                                    'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+
+    # GOLD vs Smina
+    if gold_out and smina_out and gold_results is not None and smina_results is not None:
+        for out1 in gold_out:
+            pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+            score1 = gold_results[gold_results['Pose'] == int(pose_number1)].iloc[0, 1]
+            for out2 in smina_out:
+                pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+                score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
+                pose1 = parsePDB(out1).select("hetero and noh")
+                pose2 = parsePDB(out2).select("hetero and noh")
+                rmsd = calcRMSD(pose1, pose2)
+                rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2,
+                                    'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+
+    if rmsd_result:
+        rmsd_result = pd.DataFrame(rmsd_result)
+        rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
+        logger.info('Calculating rmsd... Done.')
+    else:
+        logger.warning('No RMSD results calculated. Not enough valid docking outputs.')
     
 def run_smina(args, logger):
     logger.info('Running smina...')
@@ -575,6 +640,11 @@ def run_smina(args, logger):
     --size_x {args.pocket_size[0]} --size_y {args.pocket_size[1]} --size_z {args.pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
     --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
     logger.info('Running smina... Done.')
+
+    #continue with the rest of the process even there is mistake
+   
+
+    
 
     # Split docked poses
     split_mol(args, logger, tool="smina")
@@ -716,20 +786,32 @@ def consensus_dock(args, logger):
     args.max_coords = max_coords
 
     # Run smina docking
-    run_smina(args, logger)
+    try:
+        run_smina(args, logger)
+    except Exception as e:
+        logger.error(f"Smina docking failed: {e}")
 
     # Run LeDock docking
-    args.lepro_pdb = lepro(args, logger)
-    run_ledock(args, logger)
+    try:
+        args.lepro_pdb = lepro(args, logger)
+        run_ledock(args, logger)
+    except Exception as e:
+        logger.error(f"LeDock docking failed: {e}")
 
     # Run GalaxyDock3 docking
     #run_gd3(args, logger)
 
     # Run gold docking
-    run_gold(args, logger)
+    try:
+        run_gold(args, logger)
+    except Exception as e:
+        logger.error(f"GOLD docking failed: {e}")
 
     # calculate rmsd
-    calculate_rmsd(args, logger)
+    try:
+        calculate_rmsd(args, logger)
+    except Exception as e:
+        logger.error(f"RMSD calculation failed: {e}")
 
 
     logger.info('########## Finished consensus_docker.py #########')
