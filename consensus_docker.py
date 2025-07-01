@@ -759,10 +759,29 @@ def run_gold(args, logger):
     logger.info('Running gold... Done.')
 
 def consensus_dock(args, logger):
-    # Convert receptor pdb to pdbqt format
+    # Convert receptor pdb to pdbqt format or use provided pdbqt
     logger.info('Starting consensus_dock...')
-    args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
-    pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+    
+    if args.receptor_pdbqt:
+        # Use the provided PDBQT file
+        logger.info('Using provided receptor PDBQT file...')
+        # Copy the provided PDBQT file to the input folder for consistency
+        import shutil
+        receptor_pdbqt_filename = os.path.basename(args.receptor_pdbqt)
+        args.receptor_pdbqt_final = os.path.join(args.outfolder_input, receptor_pdbqt_filename)
+        shutil.copy2(args.receptor_pdbqt, args.receptor_pdbqt_final)
+        args.receptor_pdbqt = args.receptor_pdbqt_final
+        logger.info('Using provided receptor PDBQT file... Done.')
+        
+        # Check if receptor_pdb is also provided (needed for some tools)
+        if not args.receptor_pdb:
+            logger.warning('receptor_pdb not provided. Some tools (LeDock, GOLD) require PDB format and will be skipped.')
+    else:
+        # Convert receptor pdb to pdbqt format
+        if not args.receptor_pdb:
+            raise ValueError("Either --receptor_pdb or --receptor_pdbqt must be provided")
+        args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
+        pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
 
     # Get stem from file name of args.ligand_sdf
     sdf_path = Path(args.ligand_sdf)
@@ -772,9 +791,12 @@ def consensus_dock(args, logger):
     # Convert ligand sdf to mol2
     to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2, logger)
 
-    # Convert protein pdb to protein mol2
-    args.receptor_mol2 = os.path.join(args.outfolder_input, 'receptor.mol2')
-    to_mol2(args.receptor_pdb, 'PRO', args.receptor_mol2, logger)
+    # Convert protein pdb to protein mol2 (only if PDB is available)
+    if args.receptor_pdb:
+        args.receptor_mol2 = os.path.join(args.outfolder_input, 'receptor.mol2')
+        to_mol2(args.receptor_pdb, 'PRO', args.receptor_mol2, logger)
+    else:
+        args.receptor_mol2 = None
 
     # Get pocket coordinates
     pocket_center, pocket_size, min_coords, max_coords = get_pocket_coords(args, logger)
@@ -791,27 +813,39 @@ def consensus_dock(args, logger):
     except Exception as e:
         logger.error(f"Smina docking failed: {e}")
 
-    # Run LeDock docking
-    try:
-        args.lepro_pdb = lepro(args, logger)
-        run_ledock(args, logger)
-    except Exception as e:
-        logger.error(f"LeDock docking failed: {e}")
+    # Run LeDock docking (only if PDB is available)
+    if args.receptor_pdb:
+        try:
+            args.lepro_pdb = lepro(args, logger)
+            run_ledock(args, logger)
+        except Exception as e:
+            logger.error(f"LeDock docking failed: {e}")
+    else:
+        logger.warning('Skipping LeDock docking as it requires receptor PDB file')
 
-    # Run GalaxyDock3 docking
-    #run_gd3(args, logger)
+    # Run GalaxyDock3 docking (only if PDB is available)
+    #if args.receptor_pdb:
+    #    run_gd3(args, logger)
+    #else:
+    #    logger.warning('Skipping GalaxyDock3 docking as it requires receptor PDB file')
 
-    # Run gold docking
-    try:
-        run_gold(args, logger)
-    except Exception as e:
-        logger.error(f"GOLD docking failed: {e}")
+    # Run gold docking (only if PDB is available)
+    if args.receptor_pdb:
+        try:
+            run_gold(args, logger)
+        except Exception as e:
+            logger.error(f"GOLD docking failed: {e}")
+    else:
+        logger.warning('Skipping GOLD docking as it requires receptor PDB file')
 
-    # calculate rmsd
-    try:
-        calculate_rmsd(args, logger)
-    except Exception as e:
-        logger.error(f"RMSD calculation failed: {e}")
+    # calculate rmsd (only if multiple tools were run)
+    if args.receptor_pdb:
+        try:
+            calculate_rmsd(args, logger)
+        except Exception as e:
+            logger.error(f"RMSD calculation failed: {e}")
+    else:
+        logger.warning('Skipping RMSD calculation as only Smina was run')
 
 
     logger.info('########## Finished consensus_docker.py #########')
@@ -830,6 +864,7 @@ def main():
     parser.add_argument('--gd3_path', type=str, help='Path to GalaxyDock3 directory', default=False)
     parser.add_argument('--pH', type=float, default=7.4, help='pH value for adding missing hydrogens (default: 7.4)')
     parser.add_argument('--receptor_pdb', type=str, help='Path to receptor PDB file')
+    parser.add_argument('--receptor_pdbqt', type=str, help='Path to receptor PDBQT file (optional, skips PDB to PDBQT conversion)')
     parser.add_argument('--ligand_sdf', type=str, help='Path to ligand SDF file')
     parser.add_argument('--pocket_pdb', type=str, help='Path to pocket PDB file')
     parser.add_argument('--exhaustiveness', type=int, default=12, help='Exhaustiveness value for Smina (default: 12)')
@@ -837,6 +872,10 @@ def main():
     parser.add_argument('--num_threads', type=int, default=1, help='Number of threads for Smina (default: 1)')
     parser.add_argument('--cutoff_value', type=float, default=-7.0, help='SMINA_Score cutoff value for analysis (default: -7.0)')
     args = parser.parse_args()
+    
+    # Validate receptor input arguments
+    if not args.receptor_pdb and not args.receptor_pdbqt:
+        parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
     
     # Create output directory if it doesn't exist
     os.makedirs(args.outfolder, exist_ok=False)
