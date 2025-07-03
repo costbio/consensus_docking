@@ -501,10 +501,17 @@ def calculate_rmsd(args, logger):
     logger.info('Calculating rmsd...')
     rmsd_result=[]
 
-    # Define out folders.
-    ledock_out = glob.glob(os.path.join(args.outfolder_ledock, "complex_*.pdb"))
-    smina_out = glob.glob(os.path.join(args.outfolder_smina, "complex_*.pdb"))
-    gold_out = glob.glob(os.path.join(args.outfolder_gold, "complex_*.pdb"))
+    # Define out folders - only check existing directories
+    ledock_out = []
+    smina_out = []
+    gold_out = []
+    
+    if hasattr(args, 'outfolder_ledock') and os.path.exists(args.outfolder_ledock):
+        ledock_out = glob.glob(os.path.join(args.outfolder_ledock, "complex_*.pdb"))
+    if hasattr(args, 'outfolder_smina') and os.path.exists(args.outfolder_smina):
+        smina_out = glob.glob(os.path.join(args.outfolder_smina, "complex_*.pdb"))
+    if hasattr(args, 'outfolder_gold') and os.path.exists(args.outfolder_gold):
+        gold_out = glob.glob(os.path.join(args.outfolder_gold, "complex_*.pdb"))
 
     # Load results.csv from each out folder
     #ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
@@ -571,18 +578,27 @@ def calculate_rmsd(args, logger):
     #logger.info('Calculating rmsd... Done.')
 
     # Load results.csv if available
-    try:
-        ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv')) if ledock_out else None
-    except Exception:
-        ledock_results = None
-    try:
-        smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv')) if smina_out else None
-    except Exception:
-        smina_results = None
-    try:
-        gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv')) if gold_out else None
-    except Exception:
-        gold_results = None
+    ledock_results = None
+    smina_results = None
+    gold_results = None
+    
+    if ledock_out and hasattr(args, 'outfolder_ledock'):
+        try:
+            ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
+        except Exception as e:
+            logger.warning(f"Could not load LeDock results: {e}")
+    
+    if smina_out and hasattr(args, 'outfolder_smina'):
+        try:
+            smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv'))
+        except Exception as e:
+            logger.warning(f"Could not load Smina results: {e}")
+    
+    if gold_out and hasattr(args, 'outfolder_gold'):
+        try:
+            gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv'))
+        except Exception as e:
+            logger.warning(f"Could not load GOLD results: {e}")
 
     # LeDock vs GOLD
     if ledock_out and gold_out and ledock_results is not None and gold_results is not None:
@@ -807,45 +823,80 @@ def consensus_dock(args, logger):
     args.min_coords = min_coords
     args.max_coords = max_coords
 
+    # Run selected docking programs
+    tools_run = []
+    
     # Run smina docking
-    try:
-        run_smina(args, logger)
-    except Exception as e:
-        logger.error(f"Smina docking failed: {e}")
-
-    # Run LeDock docking (only if PDB is available)
-    if args.receptor_pdb:
+    if args.use_smina:
         try:
-            args.lepro_pdb = lepro(args, logger)
-            run_ledock(args, logger)
+            run_smina(args, logger)
+            tools_run.append('smina')
         except Exception as e:
-            logger.error(f"LeDock docking failed: {e}")
-    else:
-        logger.warning('Skipping LeDock docking as it requires receptor PDB file')
+            logger.error(f"Smina docking failed: {e}")
+
+    # Run LeDock docking (only if PDB is available and selected)
+    if args.use_ledock:
+        if args.receptor_pdb:
+            try:
+                args.lepro_pdb = lepro(args, logger)
+                run_ledock(args, logger)
+                tools_run.append('ledock')
+            except Exception as e:
+                logger.error(f"LeDock docking failed: {e}")
+        else:
+            logger.warning('Skipping LeDock docking as it requires receptor PDB file')
 
     # Run GalaxyDock3 docking (only if PDB is available)
-    #if args.receptor_pdb:
-    #    run_gd3(args, logger)
-    #else:
-    #    logger.warning('Skipping GalaxyDock3 docking as it requires receptor PDB file')
+    #if args.use_gd3 and args.receptor_pdb:
+    #    try:
+    #        run_gd3(args, logger)
+    #        tools_run.append('gd3')
+    #    except Exception as e:
+    #        logger.error(f"GalaxyDock3 docking failed: {e}")
 
-    # Run gold docking (only if PDB is available)
-    if args.receptor_pdb:
-        try:
-            run_gold(args, logger)
-        except Exception as e:
-            logger.error(f"GOLD docking failed: {e}")
-    else:
-        logger.warning('Skipping GOLD docking as it requires receptor PDB file')
+    # Run gold docking (only if PDB is available and selected)
+    if args.use_gold:
+        if args.receptor_pdb:
+            try:
+                run_gold(args, logger)
+                tools_run.append('gold')
+            except Exception as e:
+                logger.error(f"GOLD docking failed: {e}")
+        else:
+            logger.warning('Skipping GOLD docking as it requires receptor PDB file')
 
-    # calculate rmsd (only if multiple tools were run)
-    if args.receptor_pdb:
+    # Calculate RMSD if multiple tools were run in this session OR if existing results exist
+    tools_with_results = []
+    
+    # Check for results from current run
+    if 'smina' in tools_run:
+        tools_with_results.append('smina')
+    if 'ledock' in tools_run:
+        tools_with_results.append('ledock')
+    if 'gold' in tools_run:
+        tools_with_results.append('gold')
+    
+    # Check for existing results from previous runs
+    if hasattr(args, 'has_existing_results') and args.has_existing_results:
+        if os.path.exists(os.path.join(args.outfolder, 'smina', 'results.csv')) and 'smina' not in tools_with_results:
+            tools_with_results.append('smina')
+        if os.path.exists(os.path.join(args.outfolder, 'ledock', 'results.csv')) and 'ledock' not in tools_with_results:
+            tools_with_results.append('ledock')
+        if os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv')) and 'gold' not in tools_with_results:
+            tools_with_results.append('gold')
+    
+    # Calculate RMSD if we have results from multiple tools
+    if len(tools_with_results) > 1:
         try:
             calculate_rmsd(args, logger)
+            logger.info(f"RMSD calculation performed for tools: {', '.join(tools_with_results)}")
         except Exception as e:
             logger.error(f"RMSD calculation failed: {e}")
     else:
-        logger.warning('Skipping RMSD calculation as only Smina was run')
+        logger.info(f"Skipping RMSD calculation - only {len(tools_with_results)} tool(s) have results: {', '.join(tools_with_results) if tools_with_results else 'none'}")
+
+    logger.info(f"Docking completed. Tools run in this session: {', '.join(tools_run) if tools_run else 'none'}")
+    logger.info(f"Tools with available results: {', '.join(tools_with_results) if tools_with_results else 'none'}")
 
 
     logger.info('########## Finished consensus_docker.py #########')
@@ -871,34 +922,70 @@ def main():
     parser.add_argument('--num_modes', type=int, default=20, help='Number of modes for Smina (default: 20)')
     parser.add_argument('--num_threads', type=int, default=1, help='Number of threads for Smina (default: 1)')
     parser.add_argument('--cutoff_value', type=float, default=-7.0, help='SMINA_Score cutoff value for analysis (default: -7.0)')
+    parser.add_argument('--use_smina', action='store_true', help='Use Smina for docking')
+    parser.add_argument('--use_ledock', action='store_true', help='Use LeDock for docking')
+    parser.add_argument('--use_gold', action='store_true', help='Use GOLD for docking')
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
     # Validate receptor input arguments
     if not args.receptor_pdb and not args.receptor_pdbqt:
         parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
     
+    # If no docking programs are specified, use all available ones (backward compatibility)
+    if not args.use_smina and not args.use_ledock and not args.use_gold:
+        args.use_smina = True
+        args.use_ledock = True
+        args.use_gold = True
+    
+    # Validate that paths are provided for selected docking programs
+    if args.use_smina and not args.smina_path:
+        parser.error("--smina_path must be provided when using Smina")
+    if args.use_ledock and not args.ledock_path:
+        parser.error("--ledock_path must be provided when using LeDock")
+    if args.use_gold and not args.gold_path:
+        parser.error("--gold_path must be provided when using GOLD")
+    
+    # Check if output directory exists
+    if os.path.exists(args.outfolder):
+        if not args.overwrite:
+            parser.error(f"Output directory '{args.outfolder}' already exists. Use --overwrite to overwrite it.")
+        else:
+            # Check for existing results from previous runs
+            args.has_existing_results = any([
+                os.path.exists(os.path.join(args.outfolder, 'smina', 'results.csv')),
+                os.path.exists(os.path.join(args.outfolder, 'ledock', 'results.csv')),
+                os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv'))
+            ])
+    else:
+        args.has_existing_results = False
+    
     # Create output directory if it doesn't exist
-    os.makedirs(args.outfolder, exist_ok=False)
+    os.makedirs(args.outfolder, exist_ok=args.overwrite)
 
     # Create an input directory within outfolder
-    os.makedirs(os.path.join(args.outfolder, 'input'), exist_ok=False)
+    os.makedirs(os.path.join(args.outfolder, 'input'), exist_ok=args.overwrite)
     args.outfolder_input = os.path.join(args.outfolder, 'input')
 
-    # Create output directory for smina within outfolder
-    os.makedirs(os.path.join(args.outfolder, 'smina'), exist_ok=False)
+    # Create output directories for selected docking programs
+    # Always set directory attributes to avoid attribute errors
     args.outfolder_smina = os.path.join(args.outfolder, 'smina')
-
-    # Create output directory for ledock within outfolder
-    os.makedirs(os.path.join(args.outfolder, 'ledock'), exist_ok=False)
     args.outfolder_ledock = os.path.join(args.outfolder, 'ledock')
-
-    # Create output directory for gd3 within outfolder
-    os.makedirs(os.path.join(args.outfolder, 'gd3'), exist_ok=False)
-    args.outfolder_gd3 = os.path.join(args.outfolder, 'gd3')
-
-    # Create output directory for gold within outfolder
-    os.makedirs(os.path.join(args.outfolder, 'gold'), exist_ok=False)
     args.outfolder_gold = os.path.join(args.outfolder, 'gold')
+    args.outfolder_gd3 = os.path.join(args.outfolder, 'gd3')
+    
+    # Create directories only for selected programs
+    if args.use_smina:
+        os.makedirs(args.outfolder_smina, exist_ok=args.overwrite)
+
+    if args.use_ledock:
+        os.makedirs(args.outfolder_ledock, exist_ok=args.overwrite)
+
+    if args.use_gold:
+        os.makedirs(args.outfolder_gold, exist_ok=args.overwrite)
+
+    # Create output directory for gd3 within outfolder (if needed in future)
+    os.makedirs(args.outfolder_gd3, exist_ok=args.overwrite)
 
     # Timestamp for job ID
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
