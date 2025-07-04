@@ -84,15 +84,28 @@ def pdb_to_pdbqt(pdb_path, pdbqt_path, logger, pH=7.4):
 
 def lepro(args, logger):
     logger.info('Preparing input pdb for LeDock by lepro exe...')
-    subprocess.run([args.lepro_path, args.receptor_pdb])
-    logger.info('Preparing input pdb for LeDock by lepro exe... Done.')
-
-    # Move pro.pdb found in working directory to os.path.join(args.outfolder, 'ledock')
-    pro_path = os.path.join(os.getcwd(), 'pro.pdb')
-    shutil.move(pro_path, args.outfolder_ledock)
-
-    # Return final path of pro.pdb
-    return os.path.join(args.outfolder_ledock, 'pro.pdb')
+    
+    # Store the original working directory
+    original_cwd = os.getcwd()
+    
+    try:
+        # Change to the ledock output directory before running lepro
+        os.chdir(args.outfolder_ledock)
+        
+        # Run lepro in the ledock output directory
+        subprocess.run([args.lepro_path, args.receptor_pdb])
+        
+        # pro.pdb is now generated directly in the ledock output directory
+        pro_path = os.path.join(args.outfolder_ledock, 'pro.pdb')
+        
+        logger.info('Preparing input pdb for LeDock by lepro exe... Done.')
+        
+        # Return final path of pro.pdb
+        return pro_path
+        
+    finally:
+        # Always restore the original working directory
+        os.chdir(original_cwd)
 
 def to_mol2(infile, mol_name, mol2_filepath, logger):
 
