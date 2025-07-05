@@ -88,24 +88,121 @@ def lepro(args, logger):
     # Store the original working directory
     original_cwd = os.getcwd()
     
+    # Create a temporary directory with the shortest possible path
+    # Try different locations in order of preference (shortest path first)
+    temp_dir_path = None
+    max_attempts = 100  # Maximum attempts to find a unique directory name
+    
+    # Try different root locations for the shortest possible path
+    possible_roots = ["/tmp", "/var/tmp", "/", "/home", original_cwd]
+    
+    for root in possible_roots:
+        for attempt in range(max_attempts):
+            # Create a more unique temporary directory name
+            # Include process ID, timestamp, and random UUID
+            timestamp = int(datetime.now().timestamp() * 1000000)  # microseconds
+            process_id = os.getpid()
+            random_suffix = uuid.uuid4().hex[:8]
+            temp_dir_name = f"lp_{process_id}_{timestamp}_{random_suffix}"
+            
+            candidate_path = os.path.join(root, temp_dir_name)
+            
+            # Check if directory already exists
+            if os.path.exists(candidate_path):
+                continue  # Try next name
+            
+            try:
+                # Try to create the directory
+                os.makedirs(candidate_path, exist_ok=False)  # Don't allow existing
+                
+                # Test if we can write to it
+                test_file = os.path.join(candidate_path, "test")
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                
+                temp_dir_path = candidate_path
+                logger.info(f'Using temporary directory: {temp_dir_path}')
+                break
+                
+            except (OSError, PermissionError, FileExistsError):
+                # If we can't use this location or it already exists, try next name
+                # DO NOT remove existing directories - they might be in use by parallel processes
+                continue
+        
+        # If we found a working directory, break out of the root loop
+        if temp_dir_path is not None:
+            break
+    
+    if temp_dir_path is None:
+        raise RuntimeError(f"Could not create a unique temporary directory after {max_attempts} attempts in any accessible location")
+    
     try:
-        # Change to the ledock output directory before running lepro
-        os.chdir(args.outfolder_ledock)
+        # Copy receptor PDB to temporary directory for shorter path usage
+        temp_receptor_name = "receptor.pdb"
+        temp_receptor_path = os.path.join(temp_dir_path, temp_receptor_name)
+        shutil.copy2(args.receptor_pdb, temp_receptor_path)
+        logger.debug(f'Copied receptor PDB to temporary directory: {temp_receptor_path}')
         
-        # Run lepro in the ledock output directory
-        subprocess.run([args.lepro_path, args.receptor_pdb])
+        # Change to the temporary directory before running lepro
+        os.chdir(temp_dir_path)
         
-        # pro.pdb is now generated directly in the ledock output directory
-        pro_path = os.path.join(args.outfolder_ledock, 'pro.pdb')
+        # Run lepro with the local receptor file (shortest possible path)
+        subprocess.run([args.lepro_path, temp_receptor_name])
+        
+        # Check if pro.pdb was generated successfully
+        temp_pro_path = os.path.join(temp_dir_path, 'pro.pdb')
+        if not os.path.exists(temp_pro_path):
+            raise RuntimeError(f"lepro failed to generate pro.pdb in temporary directory: {temp_dir_path}")
+        
+        # Check if pro.pdb is not empty
+        if os.path.getsize(temp_pro_path) == 0:
+            raise RuntimeError(f"lepro generated an empty pro.pdb file. This may be due to path length issues or other lepro errors.")
+        
+        # Ensure the destination directory exists before moving pro.pdb
+        # Use absolute path to ensure correct destination regardless of current working directory
+        ledock_output_dir = os.path.abspath(args.outfolder_ledock)
+        os.makedirs(ledock_output_dir, exist_ok=True)
+        logger.debug(f'Ensured destination directory exists: {ledock_output_dir}')
+        
+        # Move pro.pdb to the ledock output directory using absolute paths
+        final_pro_path = os.path.join(ledock_output_dir, 'pro.pdb')
+        shutil.move(temp_pro_path, final_pro_path)
+        logger.debug(f'Successfully moved pro.pdb from {temp_pro_path} to {final_pro_path}')
         
         logger.info('Preparing input pdb for LeDock by lepro exe... Done.')
         
         # Return final path of pro.pdb
-        return pro_path
+        return final_pro_path
         
     finally:
-        # Always restore the original working directory
+        # Always restore the original working directory first
         os.chdir(original_cwd)
+        
+        # Check if we should keep the temporary directory for debugging
+        keep_temp_dir = os.environ.get('LEPRO_DEBUG_KEEP_TEMP', '').lower() in ('1', 'true', 'yes', 'on')
+        
+        if keep_temp_dir:
+            logger.info(f"DEBUG: Keeping temporary directory for debugging: {temp_dir_path}")
+            logger.info(f"DEBUG: You can manually run lepro by going to: {temp_dir_path}")
+            logger.info(f"DEBUG: Command to run: {args.lepro_path} receptor.pdb")
+            logger.info(f"DEBUG: To disable this behavior, unset LEPRO_DEBUG_KEEP_TEMP environment variable")
+        else:
+            # Clean up the temporary directory - this is critical for parallel runs
+            if temp_dir_path and os.path.exists(temp_dir_path):
+                try:
+                    shutil.rmtree(temp_dir_path)
+                    logger.debug(f"Successfully removed temporary directory: {temp_dir_path}")
+                except Exception as e:
+                    logger.warning(f"Could not remove temporary directory {temp_dir_path}: {e}")
+                    # Try to remove it again after a short delay
+                    try:
+                        import time
+                        time.sleep(0.1)
+                        shutil.rmtree(temp_dir_path)
+                        logger.debug(f"Successfully removed temporary directory on second attempt: {temp_dir_path}")
+                    except Exception as e2:
+                        logger.error(f"Failed to remove temporary directory even on second attempt {temp_dir_path}: {e2}")
 
 def to_mol2(infile, mol_name, mol2_filepath, logger):
 
