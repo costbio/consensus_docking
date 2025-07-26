@@ -1,11 +1,11 @@
 from pathlib import Path
-import subprocess, os, glob, multiprocessing, argparse, logging, warnings, uuid, sys, shutil
+import subprocess, os, glob, multiprocessing, argparse, logging, warnings, uuid, sys, shutil, time
 from datetime import datetime
 import numpy as np
 import pandas as pd
 from logging.handlers import RotatingFileHandler
 import re 
-from prody import *
+from prody import parsePDB, calcRMSD
 #import nglview as nv
 from openbabel import pybel, openbabel
 
@@ -253,15 +253,39 @@ def to_mol2(infile, mol_name, mol2_filepath, logger):
 
 def get_pocket_coords(args, logger):
     logger.info('Getting pocket coordinates...')
-    structure_df = DataFrame.from_file(args.pocket_pdb)
-    positions = np.array([structure_df["atom.x"].values,structure_df["atom.y"].values,structure_df["atom.z"].values])
-    min_coords = np.min(positions,axis=1)
-    max_coords = np.max(positions,axis=1)
-    pocket_center = list(map(str,(max_coords + min_coords) / 2))
-    pocket_size = list(map(str,(max_coords - min_coords) + 5))
-    #logger.info(f'Pocket center: {pocket_center}, Pocket size: {pocket_size}')
-    logger.info('Getting pocket coordinates... Done.')
-    return pocket_center, pocket_size, min_coords, max_coords
+    try:
+        structure_df = DataFrame.from_file(args.pocket_pdb)
+        positions = np.array([structure_df["atom.x"].values,structure_df["atom.y"].values,structure_df["atom.z"].values])
+        min_coords = np.min(positions,axis=1)
+        max_coords = np.max(positions,axis=1)
+        pocket_center = list(map(str,(max_coords + min_coords) / 2))
+        pocket_size = list(map(str,(max_coords - min_coords) + 5))
+        
+        # Enhanced debugging for pocket coordinates
+        logger.info(f"Calculated pocket coordinates:")
+        logger.info(f"  min_coords: {min_coords} (type: {type(min_coords)})")
+        logger.info(f"  max_coords: {max_coords} (type: {type(max_coords)})")
+        logger.info(f"  pocket_center: {pocket_center} (type: {type(pocket_center)})")
+        logger.info(f"  pocket_size: {pocket_size} (type: {type(pocket_size)})")
+        
+        # Validate that all values are proper strings
+        for i, (center, size) in enumerate(zip(pocket_center, pocket_size)):
+            logger.info(f"  Coordinate {i}: center='{center}' (type: {type(center)}), size='{size}' (type: {type(size)})")
+            # Check for any problematic characters or formatting
+            if not isinstance(center, str) or not isinstance(size, str):
+                logger.warning(f"  Non-string coordinate detected at index {i}")
+            if '{' in center or '}' in center or '{' in size or '}' in size:
+                logger.warning(f"  Suspicious format characters found at index {i}")
+        
+        logger.info('Getting pocket coordinates... Done.')
+        return pocket_center, pocket_size, min_coords, max_coords
+        
+    except Exception as e:
+        logger.error(f"Error calculating pocket coordinates: {e}")
+        logger.error(f"Exception type: {type(e)}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise
 
 def write_gold_res_file(args, logger):
     
@@ -759,27 +783,409 @@ def calculate_rmsd(args, logger):
     else:
         logger.warning('No RMSD results calculated. Not enough valid docking outputs.')
     
-def run_smina(args, logger):
-    logger.info('Running smina...')
-    subprocess.call(f"{args.smina_path} -r {args.receptor_pdbqt} -l {args.ligand_sdf} \
-    --center_x {args.pocket_center[0]} --center_y {args.pocket_center[1]} --center_z {args.pocket_center[2]} \
-    --size_x {args.pocket_size[0]} --size_y {args.pocket_size[1]} --size_z {args.pocket_size[2]} --out {os.path.join(args.outfolder_smina, 'out.sdf')} \
-    --num_modes {args.num_modes} --exhaustiveness {args.exhaustiveness} --cpu {args.num_threads} --log {os.path.join(args.outfolder_smina, 'out.sdf')}",shell=True)
-    logger.info('Running smina... Done.')
-
-    #continue with the rest of the process even there is mistake
-   
-
+def run_smina_single(args, logger, exhaustiveness_val, temp_outdir=None):
+    """Run a single Smina docking with specified exhaustiveness value"""
+    output_dir = temp_outdir if temp_outdir else args.outfolder_smina
     
+    logger.info(f'Running smina with exhaustiveness {exhaustiveness_val}...')
+    
+    # Enhanced debugging - log the state of all critical variables
+    logger.info(f"=== SMINA DEBUG INFO (Exhaustiveness {exhaustiveness_val}) ===")
+    logger.info(f"smina_path: {args.smina_path}")
+    logger.info(f"receptor_pdbqt: {args.receptor_pdbqt}")
+    logger.info(f"ligand_sdf: {args.ligand_sdf}")
+    logger.info(f"pocket_center: {args.pocket_center} (type: {type(args.pocket_center)})")
+    logger.info(f"pocket_size: {args.pocket_size} (type: {type(args.pocket_size)})")
+    logger.info(f"output_dir: {output_dir}")
+    logger.info(f"num_modes: {args.num_modes}")
+    logger.info(f"num_threads: {args.num_threads}")
+    
+    # Detailed inspection of pocket coordinates
+    try:
+        logger.info(f"pocket_center elements: [{args.pocket_center[0]}, {args.pocket_center[1]}, {args.pocket_center[2]}]")
+        logger.info(f"pocket_center element types: [{type(args.pocket_center[0])}, {type(args.pocket_center[1])}, {type(args.pocket_center[2])}]")
+        logger.info(f"pocket_size elements: [{args.pocket_size[0]}, {args.pocket_size[1]}, {args.pocket_size[2]}]")
+        logger.info(f"pocket_size element types: [{type(args.pocket_size[0])}, {type(args.pocket_size[1])}, {type(args.pocket_size[2])}]")
+    except Exception as coord_error:
+        logger.error(f"Error inspecting coordinate elements: {coord_error}")
+        logger.error(f"pocket_center raw: {repr(args.pocket_center)}")
+        logger.error(f"pocket_size raw: {repr(args.pocket_size)}")
+    
+    # Build the command as a single string with safer formatting
+    try:
+        # Convert coordinates to strings with explicit error handling
+        center_x_str = str(args.pocket_center[0])
+        center_y_str = str(args.pocket_center[1])
+        center_z_str = str(args.pocket_center[2])
+        size_x_str = str(args.pocket_size[0])
+        size_y_str = str(args.pocket_size[1])
+        size_z_str = str(args.pocket_size[2])
+        
+        logger.info(f"Converted coordinates - center: [{center_x_str}, {center_y_str}, {center_z_str}], size: [{size_x_str}, {size_y_str}, {size_z_str}]")
+        
+        cmd = (f"{args.smina_path} -r {args.receptor_pdbqt} -l {args.ligand_sdf} "
+               f"--center_x {center_x_str} --center_y {center_y_str} --center_z {center_z_str} "
+               f"--size_x {size_x_str} --size_y {size_y_str} --size_z {size_z_str} "
+               f"--out {os.path.join(output_dir, 'out.sdf')} "
+               f"--num_modes {args.num_modes} --exhaustiveness {exhaustiveness_val} "
+               f"--cpu {args.num_threads} --log {os.path.join(output_dir, 'out.log')}")
+        
+        logger.info(f"Constructed command: {cmd}")
+        
+    except Exception as e:
+        logger.error(f"Error constructing smina command: {e}")
+        logger.error(f"pocket_center content: {args.pocket_center}")
+        logger.error(f"pocket_size content: {args.pocket_size}")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Exception args: {e.args}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise
+    
+    logger.info(f"=== END SMINA DEBUG INFO ===")
+    
+    # Execute the command and capture any errors
+    try:
+        result = subprocess.call(cmd, shell=True)
+        if result != 0:
+            logger.warning(f"Smina command returned non-zero exit code: {result}")
+        logger.info(f'Running smina with exhaustiveness {exhaustiveness_val}... Done.')
+    except Exception as exec_error:
+        logger.error(f"Error executing smina command: {exec_error}")
+        logger.error(f"Command that failed: {cmd}")
+        raise
 
-    # Split docked poses
-    split_mol(args, logger, tool="smina")
+def check_smina_convergence(prev_results, current_results, logger, rmsd_threshold=0.1, score_threshold=0.1):
+    """Check if Smina results have converged between two exhaustiveness levels"""
+    if prev_results is None or current_results is None:
+        return False
+    
+    # Compare best scores (lowest values)
+    prev_best_score = prev_results['SMINA_Score'].min()
+    current_best_score = current_results['SMINA_Score'].min()
+    score_diff = abs(prev_best_score - current_best_score)
+    
+    logger.info(f"Score comparison: Previous best = {prev_best_score:.3f}, Current best = {current_best_score:.3f}, Difference = {score_diff:.3f}")
+    
+    # Check score convergence
+    score_converged = score_diff <= score_threshold
+    
+    # Always calculate RMSD between best poses for convergence check
+    rmsd_converged = False
+    rmsd_value = None
+    
+    try:
+        # Get the best poses from both runs
+        prev_best_idx = prev_results['SMINA_Score'].idxmin()
+        current_best_idx = current_results['SMINA_Score'].idxmin()
+        
+        prev_best_pose = prev_results.loc[prev_best_idx, 'Pose']
+        current_best_pose = current_results.loc[current_best_idx, 'Pose']
+        
+        # Ensure pose numbers are integers
+        prev_best_pose = int(prev_best_pose)
+        current_best_pose = int(current_best_pose)
+        
+        logger.debug(f"Previous best pose number: {prev_best_pose}")
+        logger.debug(f"Current best pose number: {current_best_pose}")
+        
+        # Load the complex PDB files for RMSD calculation
+        prev_complex = f"complex_{prev_best_pose}.pdb"
+        current_complex = f"complex_{current_best_pose}.pdb"
+        
+        logger.debug(f"Looking for previous complex: {prev_complex}")
+        logger.debug(f"Looking for current complex: {current_complex}")
+        
+        # Check if files exist in temporary directories
+        prev_complex_path = None
+        current_complex_path = None
+        
+        # Find the files in the appropriate directories
+        if hasattr(check_smina_convergence, 'prev_temp_dir') and check_smina_convergence.prev_temp_dir:
+            prev_complex_path = os.path.join(check_smina_convergence.prev_temp_dir, prev_complex)
+            logger.debug(f"Previous complex path: {prev_complex_path}")
+            logger.debug(f"Previous complex exists: {os.path.exists(prev_complex_path)}")
+        else:
+            logger.warning("Previous temp dir attribute not set or is None")
+            
+        if hasattr(check_smina_convergence, 'current_temp_dir') and check_smina_convergence.current_temp_dir:
+            current_complex_path = os.path.join(check_smina_convergence.current_temp_dir, current_complex)
+            logger.debug(f"Current complex path: {current_complex_path}")
+            logger.debug(f"Current complex exists: {os.path.exists(current_complex_path)}")
+        else:
+            logger.warning("Current temp dir attribute not set or is None")
+        
+        if prev_complex_path and current_complex_path and os.path.exists(prev_complex_path) and os.path.exists(current_complex_path):
+            logger.debug(f"Both complex files found, calculating RMSD...")
+            # Calculate RMSD between best poses
+            pose1 = parsePDB(prev_complex_path).select("hetero and noh")
+            pose2 = parsePDB(current_complex_path).select("hetero and noh")
+            rmsd_value = calcRMSD(pose1, pose2)
+            
+            logger.info(f"RMSD between best poses: {rmsd_value:.3f}")
+            rmsd_converged = rmsd_value <= rmsd_threshold
+        else:
+            # More detailed debugging for missing files
+            logger.warning("Could not calculate RMSD - complex PDB files not found. Cannot assess convergence properly.")
+            logger.warning(f"Expected previous complex: {prev_complex_path}")
+            logger.warning(f"  - Path exists: {os.path.exists(prev_complex_path) if prev_complex_path else 'N/A'}")
+            logger.warning(f"  - Path is file: {os.path.isfile(prev_complex_path) if prev_complex_path and os.path.exists(prev_complex_path) else 'N/A'}")
+            logger.warning(f"Expected current complex: {current_complex_path}")
+            logger.warning(f"  - Path exists: {os.path.exists(current_complex_path) if current_complex_path else 'N/A'}")
+            logger.warning(f"  - Path is file: {os.path.isfile(current_complex_path) if current_complex_path and os.path.exists(current_complex_path) else 'N/A'}")
+            
+            logger.info("Available files in previous temp dir:")
+            if hasattr(check_smina_convergence, 'prev_temp_dir') and check_smina_convergence.prev_temp_dir and os.path.exists(check_smina_convergence.prev_temp_dir):
+                files = os.listdir(check_smina_convergence.prev_temp_dir)
+                complex_files = [f for f in files if f.startswith('complex_') and f.endswith('.pdb')]
+                logger.info(f"  Total files: {len(files)}")
+                logger.info(f"  Complex files: {complex_files}")
+                for f in sorted(files):
+                    logger.info(f"    {f}")
+            else:
+                logger.info("  Previous temp dir not accessible")
+                
+            logger.info("Available files in current temp dir:")
+            if hasattr(check_smina_convergence, 'current_temp_dir') and check_smina_convergence.current_temp_dir and os.path.exists(check_smina_convergence.current_temp_dir):
+                files = os.listdir(check_smina_convergence.current_temp_dir)
+                complex_files = [f for f in files if f.startswith('complex_') and f.endswith('.pdb')]
+                logger.info(f"  Total files: {len(files)}")
+                logger.info(f"  Complex files: {complex_files}")
+                for f in sorted(files):
+                    logger.info(f"    {f}")
+            else:
+                logger.info("  Current temp dir not accessible")
+            return False  # Cannot assess convergence without RMSD
+            
+    except Exception as e:
+        logger.error(f"Error calculating RMSD for convergence check: {e}")
+        return False  # Cannot assess convergence without RMSD
+    
+    # Both conditions must be satisfied for convergence
+    converged = score_converged and rmsd_converged
+    
+    logger.info(f"Convergence check results:")
+    logger.info(f"  Score converged (diff ≤ {score_threshold}): {score_converged} (diff = {score_diff:.3f})")
+    
+    # Safe formatting for RMSD value to avoid format specifier errors
+    if rmsd_value is not None:
+        try:
+            rmsd_str = f"{float(rmsd_value):.3f}"
+        except (ValueError, TypeError):
+            rmsd_str = str(rmsd_value)
+    else:
+        rmsd_str = "N/A"
+    
+    logger.info(f"  RMSD converged (≤ {rmsd_threshold}): {rmsd_converged} (RMSD = {rmsd_str})")
+    logger.info(f"  Overall convergence: {converged}")
+    
+    if converged:
+        logger.info("Convergence achieved: BOTH score similarity AND low RMSD between best poses")
+    else:
+        if not score_converged and not rmsd_converged:
+            logger.info("No convergence: BOTH score difference and RMSD are too high")
+        elif not score_converged:
+            logger.info("No convergence: Score difference is too high")
+        elif not rmsd_converged:
+            logger.info("No convergence: RMSD between best poses is too high")
+    
+    return converged
 
-    # Make complex
-    make_complex(args, logger, tool="smina")
-
-    # Parse smina output
-    parse_smina(args, logger)
+def run_smina(args, logger):
+    if not hasattr(args, 'adaptive_exhaustiveness') or not args.adaptive_exhaustiveness:
+        # Run standard Smina docking
+        run_smina_single(args, logger, args.exhaustiveness)
+        
+        # Split docked poses
+        split_mol(args, logger, tool="smina")
+        
+        # Make complex
+        make_complex(args, logger, tool="smina")
+        
+        # Parse smina output
+        parse_smina(args, logger)
+        return
+    
+    # Adaptive exhaustiveness strategy
+    logger.info('Running smina with adaptive exhaustiveness strategy...')
+    
+    # Preserve pocket coordinates - make deep copies to prevent modification
+    original_pocket_center = args.pocket_center.copy() if hasattr(args.pocket_center, 'copy') else list(args.pocket_center)
+    original_pocket_size = args.pocket_size.copy() if hasattr(args.pocket_size, 'copy') else list(args.pocket_size)
+    
+    logger.debug(f"Preserved original pocket_center: {original_pocket_center}")
+    logger.debug(f"Preserved original pocket_size: {original_pocket_size}")
+    
+    exhaustiveness_levels = list(range(8, 257, 4))  # 8, 12, 16, ..., 256
+    if args.exhaustiveness not in exhaustiveness_levels:
+        # Insert the user-specified exhaustiveness if it's not in our list
+        exhaustiveness_levels.append(args.exhaustiveness)
+        exhaustiveness_levels.sort()
+    
+    prev_results = None
+    best_exhaustiveness = None
+    temp_directories = []
+    
+    try:
+        for i, exhaustiveness_val in enumerate(exhaustiveness_levels):
+            logger.info(f"Trying exhaustiveness level {exhaustiveness_val} ({i+1}/{len(exhaustiveness_levels)})")
+            
+            # Ensure pocket coordinates are preserved for each iteration
+            args.pocket_center = original_pocket_center.copy()
+            args.pocket_size = original_pocket_size.copy()
+            logger.debug(f"Iteration {i+1}: pocket_center = {args.pocket_center}, pocket_size = {args.pocket_size}")
+            
+            # Create temporary directory for this run
+            temp_dir = os.path.join(args.outfolder_smina, f"temp_exh_{exhaustiveness_val}")
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_directories.append(temp_dir)
+            
+            try:
+                # Run Smina with current exhaustiveness
+                run_smina_single(args, logger, exhaustiveness_val, temp_dir)
+                
+                # Process results
+                original_outfolder_smina = args.outfolder_smina
+                args.outfolder_smina = temp_dir
+                
+                try:
+                    split_mol(args, logger, tool="smina")
+                    make_complex(args, logger, tool="smina")
+                    parse_smina(args, logger)
+                    
+                    # Verify that complex files were created
+                    complex_files = glob.glob(os.path.join(temp_dir, "complex_*.pdb"))
+                    logger.debug(f"Complex files created in {temp_dir}: {[os.path.basename(f) for f in complex_files]}")
+                    
+                    # Load current results
+                    current_results = pd.read_csv(os.path.join(temp_dir, 'results.csv'))
+                    logger.debug(f"Loaded results from {temp_dir}: {len(current_results)} poses")
+                    
+                    # Store temp directory references for convergence check
+                    if i > 0:
+                        check_smina_convergence.prev_temp_dir = temp_directories[i-1]
+                        logger.debug(f"Set prev_temp_dir to: {check_smina_convergence.prev_temp_dir}")
+                    check_smina_convergence.current_temp_dir = temp_dir
+                    logger.debug(f"Set current_temp_dir to: {check_smina_convergence.current_temp_dir}")
+                    
+                    # Check convergence (skip for first run)
+                    if i > 0 and check_smina_convergence(prev_results, current_results, logger):
+                        logger.info(f"Convergence achieved at exhaustiveness {exhaustiveness_val}")
+                        best_exhaustiveness = exhaustiveness_val
+                        break
+                    
+                    # Update for next iteration
+                    prev_results = current_results.copy()
+                    best_exhaustiveness = exhaustiveness_val
+                    
+                    # Ensure we try at least 2 levels
+                    if i >= 1 and i < len(exhaustiveness_levels) - 1:
+                        continue
+                        
+                finally:
+                    args.outfolder_smina = original_outfolder_smina
+                    
+            except Exception as run_error:
+                logger.error(f"Failed at exhaustiveness level {exhaustiveness_val}: {run_error}")
+                # If this was not the first run and we have previous successful results, we can continue with those
+                if i > 0 and best_exhaustiveness is not None:
+                    logger.info(f"Continuing with previous successful results (exhaustiveness {best_exhaustiveness})")
+                    break
+                else:
+                    # If this was the first run, we have no results to fall back on
+                    raise
+        
+        # Copy results from best exhaustiveness level to main output directory
+        best_temp_dir = os.path.join(args.outfolder_smina, f"temp_exh_{best_exhaustiveness}")
+        
+        logger.info(f"Using results from exhaustiveness level {best_exhaustiveness}")
+        
+        # Ensure we have a valid best_temp_dir and it exists
+        if best_exhaustiveness is None or not os.path.exists(best_temp_dir):
+            # Find the most recent successful run
+            successful_temp_dirs = [d for d in temp_directories if os.path.exists(d) and os.path.exists(os.path.join(d, 'results.csv'))]
+            if successful_temp_dirs:
+                # Use the last successful directory
+                best_temp_dir = successful_temp_dirs[-1]
+                best_exhaustiveness = int(os.path.basename(best_temp_dir).split('_')[-1])
+                logger.info(f"No convergence achieved, using results from last successful run: exhaustiveness {best_exhaustiveness}")
+            else:
+                logger.error("No successful runs found - cannot copy results to main directory")
+                return
+        
+        # Copy all result files from best run to main output directory
+        try:
+            for filename in os.listdir(best_temp_dir):
+                if filename.startswith('temp_exh_'):
+                    continue  # Skip other temp directories
+                src = os.path.join(best_temp_dir, filename)
+                dst = os.path.join(args.outfolder_smina, filename)
+                if os.path.isfile(src):
+                    shutil.copy2(src, dst)
+                    logger.debug(f"Copied file: {filename}")
+                elif os.path.isdir(src):
+                    if os.path.exists(dst):
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst)
+                    logger.debug(f"Copied directory: {filename}")
+            
+            logger.info(f"Successfully copied results from {best_temp_dir} to main smina directory")
+        except Exception as e:
+            logger.error(f"Failed to copy results from temporary directory: {e}")
+            # Don't return here - still try to clean up temp directories
+        
+        logger.info(f'Adaptive exhaustiveness completed. Final exhaustiveness: {best_exhaustiveness}')
+        
+    except Exception as e:
+        logger.error(f"Error during adaptive exhaustiveness: {e}")
+        # Try to preserve the most recent successful results before failing
+        successful_temp_dirs = [d for d in temp_directories if os.path.exists(d) and os.path.exists(os.path.join(d, 'results.csv'))]
+        if successful_temp_dirs:
+            try:
+                recovery_temp_dir = successful_temp_dirs[-1]
+                recovery_exhaustiveness = int(os.path.basename(recovery_temp_dir).split('_')[-1])
+                logger.info(f"Attempting to recover results from exhaustiveness {recovery_exhaustiveness}")
+                
+                for filename in os.listdir(recovery_temp_dir):
+                    if filename.startswith('temp_exh_'):
+                        continue
+                    src = os.path.join(recovery_temp_dir, filename)
+                    dst = os.path.join(args.outfolder_smina, filename)
+                    if os.path.isfile(src):
+                        shutil.copy2(src, dst)
+                
+                logger.info(f"Successfully recovered results from exhaustiveness {recovery_exhaustiveness}")
+            except Exception as recovery_error:
+                logger.error(f"Failed to recover results: {recovery_error}")
+        
+        # Re-raise the original exception
+        raise
+        
+    finally:
+        # Clean up temporary directories (but preserve them if debugging is enabled)
+        keep_temp_dirs = os.environ.get('SMINA_DEBUG_KEEP_TEMP', '').lower() in ('1', 'true', 'yes', 'on')
+        
+        if keep_temp_dirs:
+            logger.info(f"DEBUG: Keeping Smina temporary directories for debugging:")
+            for temp_dir in temp_directories:
+                if os.path.exists(temp_dir):
+                    logger.info(f"  - {temp_dir}")
+            logger.info("DEBUG: To disable this behavior, unset SMINA_DEBUG_KEEP_TEMP environment variable")
+        else:
+            # Clean up temporary directories
+            for temp_dir in temp_directories:
+                if os.path.exists(temp_dir):
+                    try:
+                        shutil.rmtree(temp_dir)
+                        logger.debug(f"Removed temporary directory: {temp_dir}")
+                    except Exception as e:
+                        logger.warning(f"Could not remove temporary directory {temp_dir}: {e}")
+        
+        # Clean up convergence check attributes
+        if hasattr(check_smina_convergence, 'prev_temp_dir'):
+            delattr(check_smina_convergence, 'prev_temp_dir')
+        if hasattr(check_smina_convergence, 'current_temp_dir'):
+            delattr(check_smina_convergence, 'current_temp_dir')
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -940,7 +1346,6 @@ END
                     logger.warning(f"Could not remove LeDock temporary directory {temp_dir_path}: {e}")
                     # Try to remove it again after a short delay
                     try:
-                        import time
                         time.sleep(0.1)
                         shutil.rmtree(temp_dir_path)
                         logger.debug(f"Successfully removed LeDock temporary directory on second attempt: {temp_dir_path}")
@@ -1047,6 +1452,13 @@ def consensus_dock(args, logger):
     args.pocket_size = pocket_size
     args.min_coords = min_coords
     args.max_coords = max_coords
+    
+    # Log the assignment for debugging
+    logger.info(f"Assigned pocket coordinates to args:")
+    logger.info(f"  args.pocket_center: {args.pocket_center} (type: {type(args.pocket_center)})")
+    logger.info(f"  args.pocket_size: {args.pocket_size} (type: {type(args.pocket_size)})")
+    logger.info(f"  args.min_coords: {args.min_coords} (type: {type(args.min_coords)})")
+    logger.info(f"  args.max_coords: {args.max_coords} (type: {type(args.max_coords)})")
 
     # Run selected docking programs
     tools_run = []
@@ -1150,6 +1562,7 @@ def main():
     parser.add_argument('--use_smina', action='store_true', help='Use Smina for docking')
     parser.add_argument('--use_ledock', action='store_true', help='Use LeDock for docking')
     parser.add_argument('--use_gold', action='store_true', help='Use GOLD for docking')
+    parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for Smina (tries increasing levels from 8-256 until convergence)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
