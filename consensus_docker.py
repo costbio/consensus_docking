@@ -1553,8 +1553,16 @@ def consensus_dock(args, logger):
         if os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv')) and 'gold' not in tools_with_results:
             tools_with_results.append('gold')
     
-    # Calculate RMSD if we have results from multiple tools
-    if len(tools_with_results) > 1:
+    # Calculate RMSD if we have results from multiple tools and user hasn't disabled it
+    if args.skip_rmsd:
+        logger.info("Skipping RMSD calculation (--skip_rmsd flag enabled)")
+        logger.info("Individual tool results are available in their respective folders:")
+        for tool in tools_with_results:
+            tool_folder = os.path.join(args.outfolder, tool)
+            results_file = os.path.join(tool_folder, 'results.csv')
+            if os.path.exists(results_file):
+                logger.info(f"  - {tool.capitalize()}: {results_file}")
+    elif len(tools_with_results) > 1:
         try:
             calculate_rmsd(args, logger)
             logger.info(f"RMSD calculation performed for tools: {', '.join(tools_with_results)}")
@@ -1597,7 +1605,8 @@ def main():
     parser.add_argument('--convergence_rmsd_threshold', type=float, default=1.5, help='RMSD threshold for adaptive exhaustiveness convergence (default: 1.5 Angstrom)')
     parser.add_argument('--convergence_score_threshold', type=float, default=0.1, help='Score difference threshold for adaptive exhaustiveness convergence (default: 0.1 kcal/mol)')
     parser.add_argument('--exhaustiveness_increment', type=int, default=8, help='Increment step for adaptive exhaustiveness levels (default: 8)')
-    parser.add_argument('--maximum_exhaustiveness', type=int, default=64, help='Maximum exhaustiveness level for adaptive strategy (default: 64)')
+    parser.add_argument('--maximum_exhaustiveness', type=int, default=32, help='Maximum exhaustiveness level for adaptive strategy (default: 64)')
+    parser.add_argument('--skip_rmsd', action='store_true', help='Skip final RMSD calculation between different tools (keeps individual tool results only)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
