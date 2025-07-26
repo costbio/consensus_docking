@@ -1035,11 +1035,21 @@ def run_smina(args, logger):
     logger.debug(f"Preserved original pocket_center: {original_pocket_center}")
     logger.debug(f"Preserved original pocket_size: {original_pocket_size}")
     
-    exhaustiveness_levels = list(range(8, 257, 4))  # 8, 12, 16, ..., 256
+    # Generate exhaustiveness levels using configurable parameters
+    exhaustiveness_levels = list(range(8, args.maximum_exhaustiveness + 1, args.exhaustiveness_increment))
+    
+    # Ensure we include the user-specified exhaustiveness if it's not in our list
     if args.exhaustiveness not in exhaustiveness_levels:
-        # Insert the user-specified exhaustiveness if it's not in our list
         exhaustiveness_levels.append(args.exhaustiveness)
         exhaustiveness_levels.sort()
+    
+    # Log the strategy being used
+    logger.info(f"Adaptive exhaustiveness strategy:")
+    logger.info(f"  Levels to try: {exhaustiveness_levels}")
+    logger.info(f"  Increment: {args.exhaustiveness_increment}")
+    logger.info(f"  Maximum: {args.maximum_exhaustiveness}")
+    logger.info(f"  RMSD threshold: {args.convergence_rmsd_threshold} Å")
+    logger.info(f"  Score threshold: {args.convergence_score_threshold} kcal/mol")
     
     prev_results = None
     best_exhaustiveness = None
@@ -1583,9 +1593,11 @@ def main():
     parser.add_argument('--use_smina', action='store_true', help='Use Smina for docking')
     parser.add_argument('--use_ledock', action='store_true', help='Use LeDock for docking')
     parser.add_argument('--use_gold', action='store_true', help='Use GOLD for docking')
-    parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for Smina (tries increasing levels from 8-256 until convergence)')
+    parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for Smina (tries increasing levels starting from 8 until convergence or maximum reached)')
     parser.add_argument('--convergence_rmsd_threshold', type=float, default=1.5, help='RMSD threshold for adaptive exhaustiveness convergence (default: 1.5 Angstrom)')
     parser.add_argument('--convergence_score_threshold', type=float, default=0.1, help='Score difference threshold for adaptive exhaustiveness convergence (default: 0.1 kcal/mol)')
+    parser.add_argument('--exhaustiveness_increment', type=int, default=8, help='Increment step for adaptive exhaustiveness levels (default: 8)')
+    parser.add_argument('--maximum_exhaustiveness', type=int, default=64, help='Maximum exhaustiveness level for adaptive strategy (default: 64)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
