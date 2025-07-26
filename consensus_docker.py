@@ -855,8 +855,27 @@ def run_smina_single(args, logger, exhaustiveness_val, temp_outdir=None):
         logger.error(f"Command that failed: {cmd}")
         raise
 
-def check_smina_convergence(prev_results, current_results, logger, rmsd_threshold=0.1, score_threshold=0.1):
-    """Check if Smina results have converged between two exhaustiveness levels"""
+def check_smina_convergence(prev_results, current_results, logger, rmsd_threshold=1.5, score_threshold=0.1):
+    """
+    Check if Smina results have converged between two exhaustiveness levels
+    
+    Parameters:
+    -----------
+    prev_results : pd.DataFrame
+        Results from previous exhaustiveness level
+    current_results : pd.DataFrame  
+        Results from current exhaustiveness level
+    logger : logging.Logger
+        Logger instance for output
+    rmsd_threshold : float, default=1.5
+        RMSD threshold in Angstroms for convergence (default: 1.5)
+    score_threshold : float, default=0.1
+        Score difference threshold in kcal/mol for convergence (default: 0.1)
+    
+    Returns:
+    --------
+    bool : True if converged, False otherwise
+    """
     if prev_results is None or current_results is None:
         return False
     
@@ -1069,7 +1088,9 @@ def run_smina(args, logger):
                     logger.debug(f"Set current_temp_dir to: {check_smina_convergence.current_temp_dir}")
                     
                     # Check convergence (skip for first run)
-                    if i > 0 and check_smina_convergence(prev_results, current_results, logger):
+                    if i > 0 and check_smina_convergence(prev_results, current_results, logger, 
+                                                        rmsd_threshold=args.convergence_rmsd_threshold, 
+                                                        score_threshold=args.convergence_score_threshold):
                         logger.info(f"Convergence achieved at exhaustiveness {exhaustiveness_val}")
                         best_exhaustiveness = exhaustiveness_val
                         break
@@ -1563,6 +1584,8 @@ def main():
     parser.add_argument('--use_ledock', action='store_true', help='Use LeDock for docking')
     parser.add_argument('--use_gold', action='store_true', help='Use GOLD for docking')
     parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for Smina (tries increasing levels from 8-256 until convergence)')
+    parser.add_argument('--convergence_rmsd_threshold', type=float, default=1.5, help='RMSD threshold for adaptive exhaustiveness convergence (default: 1.5 Angstrom)')
+    parser.add_argument('--convergence_score_threshold', type=float, default=0.1, help='Score difference threshold for adaptive exhaustiveness convergence (default: 0.1 kcal/mol)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
