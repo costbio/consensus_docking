@@ -784,53 +784,168 @@ def run_smina(args, logger):
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
 
-    with open(os.path.join(args.outfolder_ledock,'ligand.txt'), "w") as f:
-        f.write(args.ligand_mol2)
+    # Create a temporary directory with the shortest possible path
+    # Try different locations in order of preference (shortest path first)
+    temp_dir_path = None
+    max_attempts = 100  # Maximum attempts to find a unique directory name
+    
+    # Try different root locations for the shortest possible path
+    possible_roots = ["/tmp", "/var/tmp", "/", "/home", os.getcwd()]
+    
+    for root in possible_roots:
+        for attempt in range(max_attempts):
+            # Create a more unique temporary directory name
+            # Include process ID, timestamp, and random UUID
+            timestamp = int(datetime.now().timestamp() * 1000000)  # microseconds
+            process_id = os.getpid()
+            random_suffix = uuid.uuid4().hex[:8]
+            temp_dir_name = f"ld_{process_id}_{timestamp}_{random_suffix}"
+            
+            candidate_path = os.path.join(root, temp_dir_name)
+            
+            # Check if directory already exists
+            if os.path.exists(candidate_path):
+                continue  # Try next name
+            
+            try:
+                # Try to create the directory
+                os.makedirs(candidate_path, exist_ok=False)  # Don't allow existing
+                
+                # Test if we can write to it
+                test_file = os.path.join(candidate_path, "test")
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                os.remove(test_file)
+                
+                temp_dir_path = candidate_path
+                logger.info(f'LeDock: Using temporary directory: {temp_dir_path}')
+                break
+                
+            except (OSError, PermissionError, FileExistsError):
+                # If we can't use this location or it already exists, try next name
+                # DO NOT remove existing directories - they might be in use by parallel processes
+                continue
+        
+        # If we found a working directory, break out of the root loop
+        if temp_dir_path is not None:
+            break
+    
+    if temp_dir_path is None:
+        raise RuntimeError(f"Could not create a unique temporary directory for LeDock after {max_attempts} attempts in any accessible location")
+    
+    # Store the original working directory
+    original_cwd = os.getcwd()
+    
+    try:
+        # Copy receptor PDB (pro.pdb from lepro) to temporary directory with short name
+        temp_receptor_name = "receptor.pdb"
+        temp_receptor_path = os.path.join(temp_dir_path, temp_receptor_name)
+        shutil.copy2(args.lepro_pdb, temp_receptor_path)
+        logger.debug(f'Copied receptor PDB to temporary directory: {temp_receptor_path}')
+        
+        # Copy ligand MOL2 file to temporary directory with short name
+        temp_ligand_name = "ligand.mol2"
+        temp_ligand_path = os.path.join(temp_dir_path, temp_ligand_name)
+        shutil.copy2(args.ligand_mol2, temp_ligand_path)
+        logger.debug(f'Copied ligand MOL2 to temporary directory: {temp_ligand_path}')
+        
+        # Create ligand.txt file in temporary directory
+        temp_ligand_txt = os.path.join(temp_dir_path, 'ligand.txt')
+        with open(temp_ligand_txt, "w") as f:
+            f.write(temp_ligand_path)
+        
+        # Create dock.in file in temporary directory with short paths
+        dock_in = f"""Receptor
+{temp_receptor_name}
 
-    dock_in = f"""
-    Receptor
-    {args.lepro_pdb}
+RMSD
+1.0
 
-    RMSD
-    1.0
+Binding pocket
+{args.min_coords[0]} {args.max_coords[0]} 
+{args.min_coords[1]} {args.max_coords[1]}
+{args.min_coords[2]} {args.max_coords[2]}
 
-    Binding pocket
-    {args.min_coords[0]} {args.max_coords[0]} 
-    {args.min_coords[1]} {args.max_coords[1]}
-    {args.min_coords[2]} {args.max_coords[2]}
+Number of binding poses
+20
 
-    Number of binding poses
-    20
+Ligands list
+ligand.txt
 
-    Ligands list
-    {os.path.join(args.outfolder_ledock, 'ligand.txt')}
+END
+"""
+        
+        temp_dock_in = os.path.join(temp_dir_path, 'dock.in')
+        with open(temp_dock_in, 'w') as dock_in_f:
+            dock_in_f.write(dock_in)
+        
+        # Change to the temporary directory before running LeDock
+        os.chdir(temp_dir_path)
+        
+        # Run LeDock with the local dock.in file (shortest possible path)
+        subprocess.call(f"{args.ledock_path} dock.in", shell=True)
+        
+        # Find all .dok files in the temporary directory and move them to ledock output folder
+        dok_files = glob.glob(os.path.join(temp_dir_path, '*.dok'))
+        
+        if not dok_files:
+            raise RuntimeError(f"LeDock failed to generate any .dok files in temporary directory: {temp_dir_path}")
+        
+        # Ensure the destination directory exists
+        ledock_output_dir = os.path.abspath(args.outfolder_ledock)
+        os.makedirs(ledock_output_dir, exist_ok=True)
+        
+        # Move all .dok files to the ledock output directory
+        for dok_file in dok_files:
+            dok_filename = os.path.basename(dok_file)
+            # The main output file should be renamed to out.dok
+            if dok_filename != 'dock.in':  # Skip non-dok files
+                if len(dok_files) == 1 or 'out' in dok_filename.lower():
+                    final_dok_path = os.path.join(ledock_output_dir, 'out.dok')
+                else:
+                    final_dok_path = os.path.join(ledock_output_dir, dok_filename)
+                shutil.move(dok_file, final_dok_path)
+                logger.debug(f'Successfully moved {dok_file} to {final_dok_path}')
+        
+        logger.info('Running LeDock... Done.')
 
-    END
-    """
+        # Split docked poses
+        split_mol(args, logger, tool="ledock")
 
-    with open(os.path.join(args.outfolder_ledock, 'dock.in'), 'w') as dock_in_f:
-        dock_in_f.write(dock_in.strip() + "\n")
+        # Make complex
+        make_complex(args, logger, tool="ledock")
 
-    subprocess.call(f"{args.ledock_path} {os.path.join(args.outfolder_ledock, 'dock.in')}", shell=True)
-
-    # Find the file with ".dok" extension in ledock output folder.
-    dock_files = glob.glob(os.path.join(args.outfolder_input, '*.dok'))
-    dock_file = dock_files[0]
-
-    # Rename that file to out.dok
-    if dock_file is not None:
-        shutil.move(dock_file, os.path.join(args.outfolder_ledock, 'out.dok'))
-
-    logger.info('Running LeDock... Done.')
-
-    # Split docked poses
-    split_mol(args, logger, tool="ledock")
-
-    # Make complex
-    make_complex(args, logger, tool="ledock")
-
-    # Parse ledock output
-    parse_ledock(args, logger)
+        # Parse ledock output
+        parse_ledock(args, logger)
+        
+    finally:
+        # Always restore the original working directory first
+        os.chdir(original_cwd)
+        
+        # Check if we should keep the temporary directory for debugging
+        keep_temp_dir = os.environ.get('LEDOCK_DEBUG_KEEP_TEMP', '').lower() in ('1', 'true', 'yes', 'on')
+        
+        if keep_temp_dir:
+            logger.info(f"DEBUG: Keeping LeDock temporary directory for debugging: {temp_dir_path}")
+            logger.info(f"DEBUG: You can manually run LeDock by going to: {temp_dir_path}")
+            logger.info(f"DEBUG: Command to run: {args.ledock_path} dock.in")
+            logger.info(f"DEBUG: To disable this behavior, unset LEDOCK_DEBUG_KEEP_TEMP environment variable")
+        else:
+            # Clean up the temporary directory - this is critical for parallel runs
+            if temp_dir_path and os.path.exists(temp_dir_path):
+                try:
+                    shutil.rmtree(temp_dir_path)
+                    logger.debug(f"Successfully removed LeDock temporary directory: {temp_dir_path}")
+                except Exception as e:
+                    logger.warning(f"Could not remove LeDock temporary directory {temp_dir_path}: {e}")
+                    # Try to remove it again after a short delay
+                    try:
+                        import time
+                        time.sleep(0.1)
+                        shutil.rmtree(temp_dir_path)
+                        logger.debug(f"Successfully removed LeDock temporary directory on second attempt: {temp_dir_path}")
+                    except Exception as e2:
+                        logger.error(f"Failed to remove LeDock temporary directory even on second attempt {temp_dir_path}: {e2}")
 
 def run_gd3(args, logger):
     logger.info('Running gd3...')
