@@ -1601,11 +1601,12 @@ def main():
     parser.add_argument('--use_smina', action='store_true', help='Use Smina for docking')
     parser.add_argument('--use_ledock', action='store_true', help='Use LeDock for docking')
     parser.add_argument('--use_gold', action='store_true', help='Use GOLD for docking')
+    parser.add_argument('--only_rmsd', action='store_true', help='Only calculate RMSD between different tools (no docking)')
     parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for Smina (tries increasing levels starting from 8 until convergence or maximum reached)')
     parser.add_argument('--convergence_rmsd_threshold', type=float, default=1.5, help='RMSD threshold for adaptive exhaustiveness convergence (default: 1.5 Angstrom)')
     parser.add_argument('--convergence_score_threshold', type=float, default=0.1, help='Score difference threshold for adaptive exhaustiveness convergence (default: 0.1 kcal/mol)')
     parser.add_argument('--exhaustiveness_increment', type=int, default=8, help='Increment step for adaptive exhaustiveness levels (default: 8)')
-    parser.add_argument('--maximum_exhaustiveness', type=int, default=32, help='Maximum exhaustiveness level for adaptive strategy (default: 64)')
+    parser.add_argument('--maximum_exhaustiveness', type=int, default=32, help='Maximum exhaustiveness level for adaptive strategy (default: 32)')
     parser.add_argument('--skip_rmsd', action='store_true', help='Skip final RMSD calculation between different tools (keeps individual tool results only)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
@@ -1613,9 +1614,9 @@ def main():
     # Validate receptor input arguments
     if not args.receptor_pdb and not args.receptor_pdbqt:
         parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
-    
-    # If no docking programs are specified, use all available ones (backward compatibility)
-    if not args.use_smina and not args.use_ledock and not args.use_gold:
+
+    # If no docking programs are specified and only RMSD is not selected, use all available ones (backward compatibility)
+    if not args.use_smina and not args.use_ledock and not args.use_gold and not args.only_rmsd:
         args.use_smina = True
         args.use_ledock = True
         args.use_gold = True
