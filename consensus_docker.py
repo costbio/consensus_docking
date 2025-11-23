@@ -428,6 +428,12 @@ def split_mol(args, logger, tool="smina"):
         for i, molecule in enumerate(molecules, 1):
             molecule.write("sdf", os.path.join(args.outfolder_smina, f"out_{i}.sdf"), overwrite=True)
 
+    elif tool == "gnina":
+        docked_poses_path = Path(os.path.join(args.outfolder_gnina, 'out.sdf'))
+        molecules = pybel.readfile("sdf", str(docked_poses_path))
+        for i, molecule in enumerate(molecules, 1):
+            molecule.write("sdf", os.path.join(args.outfolder_gnina, f"out_{i}.sdf"), overwrite=True)
+
     elif tool == "ledock":
         docked_poses_path = os.path.join(args.outfolder_ledock, 'out.dok')
         
@@ -478,6 +484,26 @@ def make_complex(args, logger, tool="smina"):
             
             docked_complex = Chem.CombineMols(receptor, ligand)
             Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_smina, f"complex_{i}.pdb"))
+
+    elif tool == "gnina":
+        receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=True)
+        if receptor is None:
+            raise RuntimeError(f"Failed to load receptor from PDB: {args.receptor_pdb}")
+
+        # Find out how many ligands we have
+        ligand_sdf = os.path.join(args.outfolder_gnina, 'out.sdf')
+        ligand_supplier = Chem.SDMolSupplier(ligand_sdf, removeHs=False)
+        ligands = [m for m in ligand_supplier if m is not None]
+        if not ligands:
+            raise RuntimeError(f"No valid molecules found in SDF file: {ligand_file}")
+        
+        num_ligands = len(list(ligands))
+
+        for i in range(1, num_ligands+1):
+            ligand = ligands[i-1]
+            
+            docked_complex = Chem.CombineMols(receptor, ligand)
+            Chem.MolToPDBFile(docked_complex, os.path.join(args.outfolder_gnina, f"complex_{i}.pdb"))
 
     elif tool == "ledock":
         receptor = Chem.MolFromPDBFile(args.lepro_pdb, removeHs=False, sanitize=True)
@@ -549,6 +575,65 @@ def parse_smina(args, logger):
     # Save the dataframe to a CSV file in args.outfolder_smina
     results.to_csv(os.path.join(args.outfolder_smina, 'results.csv'), index=False)
     logger.info('Parsing smina output... Done.')
+
+def parse_gnina(args, logger):
+    logger.info('Parsing gnina output...')
+
+    # Read the gnina log file
+    log_file = os.path.join(args.outfolder_gnina, 'out.log')
+    if not os.path.exists(log_file):
+        raise RuntimeError(f"Gnina log file not found: {log_file}")
+    
+    # Parse the log file to extract affinity, CNN pose score, and CNN affinity
+    results = pd.DataFrame(columns=['Pose', 'GNINA_Affinity', 'GNINA_CNN_pose', 'GNINA_CNN_affinity'])
+    
+    with open(log_file, 'r') as f:
+        lines = f.readlines()
+    
+    # Find the line with "mode |  affinity" to locate the start of results
+    # The header spans two lines, followed by a separator line (-----)
+    result_start_idx = None
+    for i, line in enumerate(lines):
+        if 'mode |' in line and 'affinity' in line:
+            # Skip the header lines (2 lines) and the separator line (1 line)
+            result_start_idx = i + 3
+            break
+    
+    if result_start_idx is None:
+        raise RuntimeError(f"Could not find results in gnina log file: {log_file}")
+    
+    # Parse the results
+    pose_num = 1
+    for line in lines[result_start_idx:]:
+        line = line.strip()
+        if not line or line.startswith('---'):
+            continue
+        
+        # Parse the line format:
+        # mode | affinity | intramol | CNN pose score | CNN affinity
+        parts = line.split()
+        if len(parts) < 5:
+            break  # End of results
+        
+        try:
+            mode = int(parts[0])
+            affinity = float(parts[1])
+            # Skip intramol (parts[2])
+            cnn_pose = float(parts[3])
+            cnn_affinity = float(parts[4])
+            
+            results.loc[pose_num - 1] = [pose_num, affinity, cnn_pose, cnn_affinity]
+            pose_num += 1
+        except (ValueError, IndexError):
+            # Skip lines that don't match the expected format
+            continue
+    
+    if len(results) == 0:
+        raise RuntimeError(f"No valid results found in gnina log file: {log_file}")
+    
+    # Save the dataframe to a CSV file in args.outfolder_gnina
+    results.to_csv(os.path.join(args.outfolder_gnina, 'results.csv'), index=False)
+    logger.info(f'Parsing gnina output... Done. Found {len(results)} poses.')
 
 def parse_ledock(args, logger):
     logger.info('Parsing ledock output...')
@@ -629,159 +714,127 @@ def parse_gold(args, logger):
     results.to_csv(os.path.join(args.outfolder_gold, 'results.csv'), index=False)
     logger.info('Parsing gold output... Done.')
 
-
-
 def calculate_rmsd(args, logger):
     logger.info('Calculating rmsd...')
-    rmsd_result=[]
+    rmsd_result = []
 
-    # Define out folders - only check existing directories
-    ledock_out = []
-    smina_out = []
-    gold_out = []
+    # Define available tools and their configurations
+    tools_config = {
+        'smina': {
+            'folder': getattr(args, 'outfolder_smina', None),
+            'score_column': 'SMINA_Score'
+        },
+        'gnina': {
+            'folder': getattr(args, 'outfolder_gnina', None),
+            'score_column': 'GNINA_Affinity'
+        },
+        'ledock': {
+            'folder': getattr(args, 'outfolder_ledock', None),
+            'score_column': 'LeDock_Score'
+        },
+        'gold': {
+            'folder': getattr(args, 'outfolder_gold', None),
+            'score_column': None  # Will use iloc[0, 1] for GOLD
+        }
+    }
+
+    # Collect available tools with their complex files and results
+    available_tools = {}
     
-    if hasattr(args, 'outfolder_ledock') and os.path.exists(args.outfolder_ledock):
-        ledock_out = glob.glob(os.path.join(args.outfolder_ledock, "complex_*.pdb"))
-    if hasattr(args, 'outfolder_smina') and os.path.exists(args.outfolder_smina):
-        smina_out = glob.glob(os.path.join(args.outfolder_smina, "complex_*.pdb"))
-    if hasattr(args, 'outfolder_gold') and os.path.exists(args.outfolder_gold):
-        gold_out = glob.glob(os.path.join(args.outfolder_gold, "complex_*.pdb"))
-
-    # Load results.csv from each out folder
-    #ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
-    #smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv'))
-    #gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv'))
-
-
-    #pose_zip= list(zip(ledock_out, gold_out,smina_out))
-
-    #for out1 in ledock_out:
-       # pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-        #score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
-
-        #for out2 in gold_out:
-           # pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-            #score2 = gold_results[gold_results['Pose'] == int(pose_number2)]['Score'].values[0]
-
-           # pose1 = parsePDB(out1)
-            #pose1=pose1.select("hetero and noh")
-           # pose2 = parsePDB(out2)
-           # pose2=pose2.select("hetero and noh")
-           # rmsd = calcRMSD(pose1, pose2)
-           # rmsd_result.append({'Tool1':'LeDock', 'Tool2':'GOLD', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-           # 'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
-
-    #for out1 in ledock_out:
-      #  pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-       # score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
-
-       # for out2 in smina_out:
-         #   pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-          #  score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
-
-           # pose1 = parsePDB(out1)
-          #  pose1=pose1.select("hetero and noh")
-           # pose2 = parsePDB(out2)
-          #  pose2=pose2.select("hetero and noh")
-           # rmsd = calcRMSD(pose1, pose2)
-           # rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-           # 'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+    for tool_name, config in tools_config.items():
+        folder = config['folder']
+        if folder and os.path.exists(folder):
+            complex_files = glob.glob(os.path.join(folder, "complex_*.pdb"))
+            results_file = os.path.join(folder, 'results.csv')
             
-    #for out1 in gold_out:
-       # pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-       # score1 = gold_results[gold_results['Pose'] == int(pose_number1)]['Score'].values[0]
+            if complex_files and os.path.exists(results_file):
+                try:
+                    results_df = pd.read_csv(results_file)
+                    available_tools[tool_name] = {
+                        'complex_files': complex_files,
+                        'results': results_df,
+                        'score_column': config['score_column']
+                    }
+                    logger.info(f"Found {len(complex_files)} poses for {tool_name}")
+                except Exception as e:
+                    logger.warning(f"Could not load {tool_name} results: {e}")
 
-        #for out2 in smina_out:
-          #  pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-           # score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
-
-          #  pose1 = parsePDB(out1)
-           # pose1=pose1.select("hetero and noh")
-           # pose2 = parsePDB(out2)
-           # pose2=pose2.select("hetero and noh")
-           # rmsd = calcRMSD(pose1, pose2)
-           # rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2, 
-           # 'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
-
-    # Save the dataframe to a CSV file in args.outfolder
-    #make df out of rmsd results
-    #rmsd_result = pd.DataFrame(rmsd_result)
+    # Get list of tool names
+    tool_names = list(available_tools.keys())
     
-    #rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
+    if len(tool_names) < 2:
+        logger.warning(f'Not enough tools with valid results for RMSD calculation. Found: {tool_names}')
+        return
 
-    #logger.info('Calculating rmsd... Done.')
+    logger.info(f"Calculating RMSD between tools: {', '.join(tool_names)}")
 
-    # Load results.csv if available
-    ledock_results = None
-    smina_results = None
-    gold_results = None
-    
-    if ledock_out and hasattr(args, 'outfolder_ledock'):
-        try:
-            ledock_results = pd.read_csv(os.path.join(args.outfolder_ledock, 'results.csv'))
-        except Exception as e:
-            logger.warning(f"Could not load LeDock results: {e}")
-    
-    if smina_out and hasattr(args, 'outfolder_smina'):
-        try:
-            smina_results = pd.read_csv(os.path.join(args.outfolder_smina, 'results.csv'))
-        except Exception as e:
-            logger.warning(f"Could not load Smina results: {e}")
-    
-    if gold_out and hasattr(args, 'outfolder_gold'):
-        try:
-            gold_results = pd.read_csv(os.path.join(args.outfolder_gold, 'results.csv'))
-        except Exception as e:
-            logger.warning(f"Could not load GOLD results: {e}")
-
-    # LeDock vs GOLD
-    if ledock_out and gold_out and ledock_results is not None and gold_results is not None:
-        for out1 in ledock_out:
-            pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-            score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
-            for out2 in gold_out:
-                pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-                score2 = gold_results[gold_results['Pose'] == int(pose_number2)].iloc[0, 1]
-                pose1 = parsePDB(out1).select("hetero and noh")
-                pose2 = parsePDB(out2).select("hetero and noh")
-                rmsd = calcRMSD(pose1, pose2)
-                rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'GOLD', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2,
-                                    'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
-
-    # LeDock vs Smina
-    if ledock_out and smina_out and ledock_results is not None and smina_results is not None:
-        for out1 in ledock_out:
-            pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-            score1 = ledock_results[ledock_results['Pose'] == int(pose_number1)]['LeDock_Score'].values[0]
-            for out2 in smina_out:
-                pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-                score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
-                pose1 = parsePDB(out1).select("hetero and noh")
-                pose2 = parsePDB(out2).select("hetero and noh")
-                rmsd = calcRMSD(pose1, pose2)
-                rmsd_result.append({'Tool1': 'LeDock', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2,
-                                    'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
-
-    # GOLD vs Smina
-    if gold_out and smina_out and gold_results is not None and smina_results is not None:
-        for out1 in gold_out:
-            pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-            score1 = gold_results[gold_results['Pose'] == int(pose_number1)].iloc[0, 1]
-            for out2 in smina_out:
-                pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-                score2 = smina_results[smina_results['Pose'] == int(pose_number2)]['SMINA_Score'].values[0]
-                pose1 = parsePDB(out1).select("hetero and noh")
-                pose2 = parsePDB(out2).select("hetero and noh")
-                rmsd = calcRMSD(pose1, pose2)
-                rmsd_result.append({'Tool1': 'GOLD', 'Tool2': 'Smina', 'PoseNumber1': pose_number1, 'PoseNumber2': pose_number2,
-                                    'Score1': score1, 'Score2': score2, 'File1': out1.split("/")[-1], 'File2': out2.split("/")[-1], 'RMSD': rmsd})
+    # Calculate RMSD for all pairs of tools
+    for i in range(len(tool_names)):
+        for j in range(i + 1, len(tool_names)):
+            tool1_name = tool_names[i]
+            tool2_name = tool_names[j]
+            
+            tool1_data = available_tools[tool1_name]
+            tool2_data = available_tools[tool2_name]
+            
+            logger.info(f"Comparing {tool1_name} vs {tool2_name}...")
+            
+            for out1 in tool1_data['complex_files']:
+                pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
+                
+                # Get score for tool1
+                pose1_df = tool1_data['results'][tool1_data['results']['Pose'] == int(pose_number1)]
+                if len(pose1_df) == 0:
+                    continue
+                
+                if tool1_data['score_column']:
+                    score1 = pose1_df[tool1_data['score_column']].values[0]
+                else:
+                    # Special handling for GOLD (uses iloc)
+                    score1 = pose1_df.iloc[0, 1]
+                
+                for out2 in tool2_data['complex_files']:
+                    pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
+                    
+                    # Get score for tool2
+                    pose2_df = tool2_data['results'][tool2_data['results']['Pose'] == int(pose_number2)]
+                    if len(pose2_df) == 0:
+                        continue
+                    
+                    if tool2_data['score_column']:
+                        score2 = pose2_df[tool2_data['score_column']].values[0]
+                    else:
+                        # Special handling for GOLD (uses iloc)
+                        score2 = pose2_df.iloc[0, 1]
+                    
+                    # Calculate RMSD
+                    try:
+                        pose1 = parsePDB(out1).select("hetero and noh")
+                        pose2 = parsePDB(out2).select("hetero and noh")
+                        rmsd = calcRMSD(pose1, pose2)
+                        
+                        rmsd_result.append({
+                            'Tool1': tool1_name.upper(),
+                            'Tool2': tool2_name.upper(),
+                            'PoseNumber1': pose_number1,
+                            'PoseNumber2': pose_number2,
+                            'Score1': score1,
+                            'Score2': score2,
+                            'File1': out1.split("/")[-1],
+                            'File2': out2.split("/")[-1],
+                            'RMSD': rmsd
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error calculating RMSD for {out1} vs {out2}: {e}")
 
     if rmsd_result:
         rmsd_result = pd.DataFrame(rmsd_result)
         rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
-        logger.info('Calculating rmsd... Done.')
+        logger.info(f'Calculating rmsd... Done. Calculated {len(rmsd_result)} RMSD comparisons.')
+        logger.info(f'Results saved to: {os.path.join(args.outfolder, "final_results.csv")}')
     else:
         logger.warning('No RMSD results calculated. Not enough valid docking outputs.')
+
     
 def run_smina_single(args, logger, exhaustiveness_val, temp_outdir=None):
     """Run a single Smina docking with specified exhaustiveness value"""
@@ -1217,6 +1270,92 @@ def run_smina(args, logger):
             delattr(check_smina_convergence, 'prev_temp_dir')
         if hasattr(check_smina_convergence, 'current_temp_dir'):
             delattr(check_smina_convergence, 'current_temp_dir')
+
+def run_gnina_single(args, logger):
+    """Run Gnina docking"""
+    logger.info('Running gnina...')
+    
+    # Enhanced debugging - log the state of all critical variables
+    logger.info(f"=== GNINA DEBUG INFO ===")
+    logger.info(f"gnina_path: {args.gnina_path}")
+    logger.info(f"receptor_pdb: {args.receptor_pdb}")
+    logger.info(f"ligand_sdf: {args.ligand_sdf}")
+    logger.info(f"pocket_center: {args.pocket_center} (type: {type(args.pocket_center)})")
+    logger.info(f"pocket_size: {args.pocket_size} (type: {type(args.pocket_size)})")
+    logger.info(f"output_dir: {args.outfolder_gnina}")
+    logger.info(f"num_modes: {args.num_modes}")
+    logger.info(f"exhaustiveness: {args.exhaustiveness}")
+    logger.info(f"num_threads: {args.num_threads}")
+    
+    # Build the command
+    try:
+        # Convert coordinates to strings with explicit error handling
+        center_x_str = str(args.pocket_center[0])
+        center_y_str = str(args.pocket_center[1])
+        center_z_str = str(args.pocket_center[2])
+        size_x_str = str(args.pocket_size[0])
+        size_y_str = str(args.pocket_size[1])
+        size_z_str = str(args.pocket_size[2])
+        
+        logger.info(f"Converted coordinates - center: [{center_x_str}, {center_y_str}, {center_z_str}], size: [{size_x_str}, {size_y_str}, {size_z_str}]")
+        
+        # Gnina uses receptor PDB (not PDBQT) and ligand SDF
+        cmd = (f"{args.gnina_path} -r {args.receptor_pdb} -l {args.ligand_sdf} "
+               f"--center_x {center_x_str} --center_y {center_y_str} --center_z {center_z_str} "
+               f"--size_x {size_x_str} --size_y {size_y_str} --size_z {size_z_str} "
+               f"-o {os.path.join(args.outfolder_gnina, 'out.sdf')} "
+               f"--log {os.path.join(args.outfolder_gnina, 'out.log')}")
+        
+        # Add num_modes if specified
+        if hasattr(args, 'num_modes') and args.num_modes:
+            cmd += f" --num_modes {args.num_modes}"
+        
+        # Add exhaustiveness if specified
+        if hasattr(args, 'exhaustiveness') and args.exhaustiveness:
+            cmd += f" --exhaustiveness {args.exhaustiveness}"
+        
+        # Add num_threads/cpu if specified
+        if hasattr(args, 'num_threads') and args.num_threads:
+            cmd += f" --cpu {args.num_threads}"
+        
+        logger.info(f"Constructed command: {cmd}")
+        
+    except Exception as e:
+        logger.error(f"Error constructing gnina command: {e}")
+        logger.error(f"pocket_center content: {args.pocket_center}")
+        logger.error(f"pocket_size content: {args.pocket_size}")
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Exception args: {e.args}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        raise
+    
+    logger.info(f"=== END GNINA DEBUG INFO ===")
+    
+    # Execute the command and capture any errors
+    try:
+        result = subprocess.call(cmd, shell=True)
+        if result != 0:
+            logger.warning(f"Gnina command returned non-zero exit code: {result}")
+        logger.info('Running gnina... Done.')
+    except Exception as exec_error:
+        logger.error(f"Error executing gnina command: {exec_error}")
+        logger.error(f"Command that failed: {cmd}")
+        raise
+
+def run_gnina(args, logger):
+    """Run Gnina docking"""
+    # Run Gnina docking
+    run_gnina_single(args, logger)
+    
+    # Split docked poses
+    split_mol(args, logger, tool="gnina")
+    
+    # Make complex
+    make_complex(args, logger, tool="gnina")
+    
+    # Parse gnina output
+    parse_gnina(args, logger)
     
 def run_ledock(args, logger):
     logger.info('Running LeDock...')
@@ -1454,11 +1593,18 @@ def consensus_dock(args, logger):
         if not args.receptor_pdb:
             logger.warning('receptor_pdb not provided. Some tools (LeDock, GOLD) require PDB format and will be skipped.')
     else:
-        # Convert receptor pdb to pdbqt format
+        # Convert receptor pdb to pdbqt format (unless skipped)
         if not args.receptor_pdb:
             raise ValueError("Either --receptor_pdb or --receptor_pdbqt must be provided")
-        args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
-        pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+        
+        if args.skip_pdb_to_pdbqt:
+            logger.info('Skipping PDB to PDBQT conversion (--skip_pdb_to_pdbqt enabled)')
+            if not args.receptor_pdbqt:
+                logger.info('No PDBQT file provided. Tools requiring PDBQT (Smina) will use PDB file if compatible or may fail.')
+                args.receptor_pdbqt = None
+        else:
+            args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
+            pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
 
     # Get stem from file name of args.ligand_sdf
     sdf_path = Path(args.ligand_sdf)
@@ -1500,7 +1646,15 @@ def consensus_dock(args, logger):
             run_smina(args, logger)
             tools_run.append('smina')
         except Exception as e:
-            logger.error(f"Smina docking failed: {e}")
+            logger.error(f"smina docking failed: {e}")
+
+    # Run gnina docking
+    if args.use_gnina:
+        try:
+            run_gnina(args, logger)
+            tools_run.append('gnina')
+        except Exception as e:
+            logger.error(f"gnina docking failed: {e}")
 
     # Run LeDock docking (only if PDB is available and selected)
     if args.use_ledock:
@@ -1543,6 +1697,8 @@ def consensus_dock(args, logger):
         tools_with_results.append('ledock')
     if 'gold' in tools_run:
         tools_with_results.append('gold')
+    if 'gnina' in tools_run:
+        tools_with_results.append('gnina')
     
     # Check for existing results from previous runs
     if hasattr(args, 'has_existing_results') and args.has_existing_results:
@@ -1552,6 +1708,8 @@ def consensus_dock(args, logger):
             tools_with_results.append('ledock')
         if os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv')) and 'gold' not in tools_with_results:
             tools_with_results.append('gold')
+        if os.path.exists(os.path.join(args.outfolder, 'gnina', 'results.csv')) and 'gnina' not in tools_with_results:
+            tools_with_results.append('gnina')
     
     # Calculate RMSD if we have results from multiple tools and user hasn't disabled it
     if args.skip_rmsd:
@@ -1584,7 +1742,8 @@ def main():
     )
 
     parser.add_argument('--outfolder', type=str, help='Base output directory (default: current directory)')
-    parser.add_argument('--smina_path', type=str, default=False, help='Path to Smina executable')
+    parser.add_argument('--smina_path', type=str, default=False, help='Path to smina executable')
+    parser.add_argument('--gnina_path', type=str, default=False, help='Path to gnina executable')
     parser.add_argument('--ledock_path', type=str, default=False, help='Path to LeDock executable')
     parser.add_argument('--lepro_path', type=str, default='lepro', help='Path to lepro executable')
     parser.add_argument('--gold_path', type=str, default=False, help='Path to gold executable')
@@ -1594,20 +1753,22 @@ def main():
     parser.add_argument('--receptor_pdbqt', type=str, help='Path to receptor PDBQT file (optional, skips PDB to PDBQT conversion)')
     parser.add_argument('--ligand_sdf', type=str, help='Path to ligand SDF file')
     parser.add_argument('--pocket_pdb', type=str, help='Path to pocket PDB file')
-    parser.add_argument('--exhaustiveness', type=int, default=12, help='Exhaustiveness value for Smina (default: 12)')
-    parser.add_argument('--num_modes', type=int, default=20, help='Number of modes for Smina (default: 20)')
-    parser.add_argument('--num_threads', type=int, default=1, help='Number of threads for Smina (default: 1)')
+    parser.add_argument('--exhaustiveness', type=int, default=12, help='Exhaustiveness value for smina (default: 12)')
+    parser.add_argument('--num_modes', type=int, default=20, help='Number of modes for smina and gnina (default: 20)')
+    parser.add_argument('--num_threads', type=int, default=1, help='Number of threads for smina and gnina (default: 1)')
     parser.add_argument('--cutoff_value', type=float, default=-7.0, help='SMINA_Score cutoff value for analysis (default: -7.0)')
-    parser.add_argument('--use_smina', action='store_true', help='Use Smina for docking')
+    parser.add_argument('--use_smina', action='store_true', help='Use smina for docking')
+    parser.add_argument('--use_gnina', action='store_true', help='Use gnina for docking')
     parser.add_argument('--use_ledock', action='store_true', help='Use LeDock for docking')
     parser.add_argument('--use_gold', action='store_true', help='Use GOLD for docking')
     parser.add_argument('--only_rmsd', action='store_true', help='Only calculate RMSD between different tools (no docking)')
-    parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for Smina (tries increasing levels starting from 8 until convergence or maximum reached)')
+    parser.add_argument('--adaptive_exhaustiveness', action='store_true', help='Use adaptive exhaustiveness strategy for smina (tries increasing levels starting from 8 until convergence or maximum reached)')
     parser.add_argument('--convergence_rmsd_threshold', type=float, default=1.5, help='RMSD threshold for adaptive exhaustiveness convergence (default: 1.5 Angstrom)')
     parser.add_argument('--convergence_score_threshold', type=float, default=0.1, help='Score difference threshold for adaptive exhaustiveness convergence (default: 0.1 kcal/mol)')
     parser.add_argument('--exhaustiveness_increment', type=int, default=8, help='Increment step for adaptive exhaustiveness levels (default: 8)')
     parser.add_argument('--maximum_exhaustiveness', type=int, default=32, help='Maximum exhaustiveness level for adaptive strategy (default: 32)')
     parser.add_argument('--skip_rmsd', action='store_true', help='Skip final RMSD calculation between different tools (keeps individual tool results only)')
+    parser.add_argument('--skip_pdb_to_pdbqt', action='store_true', help='Skip conversion from PDB to PDBQT format (requires --receptor_pdbqt to be provided)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
@@ -1616,18 +1777,21 @@ def main():
         parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
 
     # If no docking programs are specified and only RMSD is not selected, use all available ones (backward compatibility)
-    if not args.use_smina and not args.use_ledock and not args.use_gold and not args.only_rmsd:
+    if not args.use_smina and not args.use_ledock and not args.use_gold and not args.use_gnina and not args.only_rmsd:
         args.use_smina = True
         args.use_ledock = True
         args.use_gold = True
+        args.use_gnina = True
     
     # Validate that paths are provided for selected docking programs
     if args.use_smina and not args.smina_path:
-        parser.error("--smina_path must be provided when using Smina")
+        parser.error("--smina_path must be provided when using smina")
     if args.use_ledock and not args.ledock_path:
         parser.error("--ledock_path must be provided when using LeDock")
     if args.use_gold and not args.gold_path:
         parser.error("--gold_path must be provided when using GOLD")
+    if args.use_gnina and not args.gnina_path:
+        parser.error("--gnina_path must be provided when using gnina")
     
     # Check if output directory exists
     if os.path.exists(args.outfolder):
@@ -1638,7 +1802,8 @@ def main():
             args.has_existing_results = any([
                 os.path.exists(os.path.join(args.outfolder, 'smina', 'results.csv')),
                 os.path.exists(os.path.join(args.outfolder, 'ledock', 'results.csv')),
-                os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv'))
+                os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv')),
+                os.path.exists(os.path.join(args.outfolder, 'gnina', 'results.csv'))
             ])
     else:
         args.has_existing_results = False
@@ -1656,6 +1821,7 @@ def main():
     args.outfolder_ledock = os.path.join(args.outfolder, 'ledock')
     args.outfolder_gold = os.path.join(args.outfolder, 'gold')
     args.outfolder_gd3 = os.path.join(args.outfolder, 'gd3')
+    args.outfolder_gnina = os.path.join(args.outfolder, 'gnina')
     
     # Create directories only for selected programs
     if args.use_smina:
@@ -1666,6 +1832,9 @@ def main():
 
     if args.use_gold:
         os.makedirs(args.outfolder_gold, exist_ok=args.overwrite)
+
+    if args.use_gnina:
+        os.makedirs(args.outfolder_gnina, exist_ok=args.overwrite)
 
     # Create output directory for gd3 within outfolder (if needed in future)
     os.makedirs(args.outfolder_gd3, exist_ok=args.overwrite)
