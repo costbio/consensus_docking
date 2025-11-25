@@ -1304,7 +1304,8 @@ def run_gnina_single(args, logger):
                f"--center_x {center_x_str} --center_y {center_y_str} --center_z {center_z_str} "
                f"--size_x {size_x_str} --size_y {size_y_str} --size_z {size_z_str} "
                f"-o {os.path.join(args.outfolder_gnina, 'out.sdf')} "
-               f"--log {os.path.join(args.outfolder_gnina, 'out.log')}")
+               f"--log {os.path.join(args.outfolder_gnina, 'out.log')} "
+               f"--cpu {args.num_threads}")
         
         # Add num_modes if specified
         if hasattr(args, 'num_modes') and args.num_modes:
