@@ -1315,10 +1315,6 @@ def run_gnina_single(args, logger):
         if hasattr(args, 'exhaustiveness') and args.exhaustiveness:
             cmd += f" --exhaustiveness {args.exhaustiveness}"
         
-        # Add num_threads/cpu if specified
-        if hasattr(args, 'num_threads') and args.num_threads:
-            cmd += f" --cpu {args.num_threads}"
-        
         logger.info(f"Constructed command: {cmd}")
         
     except Exception as e:
