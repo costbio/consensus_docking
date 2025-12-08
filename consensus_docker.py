@@ -620,7 +620,7 @@ def parse_gnina(args, logger):
             affinity = float(parts[1])
             # Skip intramol (parts[2])
             cnn_pose = float(parts[3])
-            cnn_affinity = float(parts[4])
+            cnn_affinity = float(parts[4]);
             
             results.loc[pose_num - 1] = [pose_num, affinity, cnn_pose, cnn_affinity]
             pose_num += 1
@@ -1575,48 +1575,76 @@ def consensus_dock(args, logger):
     # Convert receptor pdb to pdbqt format or use provided pdbqt
     logger.info('Starting consensus_dock...')
     
-    if args.receptor_pdbqt:
-        # Use the provided PDBQT file
-        logger.info('Using provided receptor PDBQT file...')
-        # Copy the provided PDBQT file to the input folder for consistency
-        import shutil
-        receptor_pdbqt_filename = os.path.basename(args.receptor_pdbqt)
-        args.receptor_pdbqt_final = os.path.join(args.outfolder_input, receptor_pdbqt_filename)
-        shutil.copy2(args.receptor_pdbqt, args.receptor_pdbqt_final)
-        args.receptor_pdbqt = args.receptor_pdbqt_final
-        logger.info('Using provided receptor PDBQT file... Done.')
-        
-        # Check if receptor_pdb is also provided (needed for some tools)
-        if not args.receptor_pdb:
-            logger.warning('receptor_pdb not provided. Some tools (LeDock, GOLD) require PDB format and will be skipped.')
-    else:
-        # Convert receptor pdb to pdbqt format (unless skipped)
-        if not args.receptor_pdb:
-            raise ValueError("Either --receptor_pdb or --receptor_pdbqt must be provided")
-        
-        if args.skip_pdb_to_pdbqt:
-            logger.info('Skipping PDB to PDBQT conversion (--skip_pdb_to_pdbqt enabled)')
-            if not args.receptor_pdbqt:
-                logger.info('No PDBQT file provided. Tools requiring PDBQT (Smina) will use PDB file if compatible or may fail.')
-                args.receptor_pdbqt = None
+    # Determine which conversions are actually needed based on selected tools
+    needs_pdbqt = args.use_smina  # Only Smina requires PDBQT
+    needs_ligand_mol2 = args.use_ledock  # Only LeDock requires ligand MOL2
+    needs_receptor_mol2 = False  # GalaxyDock3 is disabled, so never needed for now
+    
+    logger.info(f"File conversion requirements based on selected tools:")
+    logger.info(f"  - PDBQT conversion needed: {needs_pdbqt} (Smina selected: {args.use_smina})")
+    logger.info(f"  - Ligand MOL2 conversion needed: {needs_ligand_mol2} (LeDock selected: {args.use_ledock})")
+    logger.info(f"  - Receptor MOL2 conversion needed: {needs_receptor_mol2}")
+    
+    # Handle receptor PDBQT - initialize from args or None
+    original_receptor_pdbqt = getattr(args, 'receptor_pdbqt', None)
+    args.receptor_pdbqt = None  # Reset, will set if needed
+    
+    if needs_pdbqt:
+        if original_receptor_pdbqt:
+            # Use the provided PDBQT file
+            logger.info('Using provided receptor PDBQT file...')
+            # Ensure input directory exists before copying
+            os.makedirs(args.outfolder_input, exist_ok=True)
+            # Copy the provided PDBQT file to the input folder for consistency
+            receptor_pdbqt_filename = os.path.basename(original_receptor_pdbqt)
+            args.receptor_pdbqt_final = os.path.join(args.outfolder_input, receptor_pdbqt_filename)
+            shutil.copy2(original_receptor_pdbqt, args.receptor_pdbqt_final)
+            args.receptor_pdbqt = args.receptor_pdbqt_final
+            logger.info('Using provided receptor PDBQT file... Done.')
+            
+            # Check if receptor_pdb is also provided (needed for some tools)
+            if not args.receptor_pdb:
+                logger.warning('receptor_pdb not provided. Some tools (LeDock, GOLD, Gnina) require PDB format and will be skipped.')
         else:
-            args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
-            pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+            # Convert receptor pdb to pdbqt format (unless skipped)
+            if not args.receptor_pdb:
+                raise ValueError("Either --receptor_pdb or --receptor_pdbqt must be provided for Smina")
+            
+            if args.skip_pdb_to_pdbqt:
+                logger.info('Skipping PDB to PDBQT conversion (--skip_pdb_to_pdbqt enabled)')
+                logger.warning('Smina requires PDBQT file. Smina docking may fail without it.')
+            else:
+                # Ensure input directory exists before conversion
+                os.makedirs(args.outfolder_input, exist_ok=True)
+                args.receptor_pdbqt = os.path.join(args.outfolder_input, 'receptor.pdbqt')
+                pdb_to_pdbqt(args.receptor_pdb, args.receptor_pdbqt, logger, pH=args.pH)
+    else:
+        logger.info('Skipping PDBQT conversion (not needed for selected tools)')
 
     # Get stem from file name of args.ligand_sdf
     sdf_path = Path(args.ligand_sdf)
     sdf_stem = sdf_path.stem
-    args.ligand_mol2 = os.path.join(args.outfolder_input, sdf_stem + '.mol2')
 
-    # Convert ligand sdf to mol2
-    to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2, logger)
-
-    # Convert protein pdb to protein mol2 (only if PDB is available)
-    if args.receptor_pdb:
-        args.receptor_mol2 = os.path.join(args.outfolder_input, 'receptor.mol2')
-        to_mol2(args.receptor_pdb, 'PRO', args.receptor_mol2, logger)
+    # Convert ligand sdf to mol2 only if needed
+    args.ligand_mol2 = None  # Initialize to None
+    if needs_ligand_mol2:
+        # Ensure input directory exists before conversion
+        os.makedirs(args.outfolder_input, exist_ok=True)
+        args.ligand_mol2 = os.path.join(args.outfolder_input, sdf_stem + '.mol2')
+        to_mol2(args.ligand_sdf, 'LIG', args.ligand_mol2, logger)
     else:
-        args.receptor_mol2 = None
+        logger.info('Skipping ligand MOL2 conversion (not needed for selected tools)')
+
+    # Convert protein pdb to protein mol2 only if needed
+    args.receptor_mol2 = None  # Initialize to None
+    if needs_receptor_mol2:
+        if args.receptor_pdb:
+            args.receptor_mol2 = os.path.join(args.outfolder_input, 'receptor.mol2')
+            to_mol2(args.receptor_pdb, 'PRO', args.receptor_mol2, logger)
+        else:
+            logger.warning('Receptor MOL2 conversion needed but receptor_pdb not provided')
+    else:
+        logger.info('Skipping receptor MOL2 conversion (not needed for selected tools)')
 
     # Get pocket coordinates
     pocket_center, pocket_size, min_coords, max_coords = get_pocket_coords(args, logger)
@@ -1639,31 +1667,39 @@ def consensus_dock(args, logger):
     
     # Run smina docking
     if args.use_smina:
-        try:
-            run_smina(args, logger)
-            tools_run.append('smina')
-        except Exception as e:
-            logger.error(f"smina docking failed: {e}")
+        if args.receptor_pdbqt is None:
+            logger.error("Cannot run Smina: receptor PDBQT file is not available")
+        else:
+            try:
+                run_smina(args, logger)
+                tools_run.append('smina')
+            except Exception as e:
+                logger.error(f"smina docking failed: {e}")
 
     # Run gnina docking
     if args.use_gnina:
-        try:
-            run_gnina(args, logger)
-            tools_run.append('gnina')
-        except Exception as e:
-            logger.error(f"gnina docking failed: {e}")
+        if not args.receptor_pdb:
+            logger.error("Cannot run Gnina: receptor PDB file is not available")
+        else:
+            try:
+                run_gnina(args, logger)
+                tools_run.append('gnina')
+            except Exception as e:
+                logger.error(f"gnina docking failed: {e}")
 
     # Run LeDock docking (only if PDB is available and selected)
     if args.use_ledock:
-        if args.receptor_pdb:
+        if not args.receptor_pdb:
+            logger.warning('Skipping LeDock docking as it requires receptor PDB file')
+        elif not args.ligand_mol2:
+            logger.error('Cannot run LeDock: ligand MOL2 file is not available')
+        else:
             try:
                 args.lepro_pdb = lepro(args, logger)
                 run_ledock(args, logger)
                 tools_run.append('ledock')
             except Exception as e:
                 logger.error(f"LeDock docking failed: {e}")
-        else:
-            logger.warning('Skipping LeDock docking as it requires receptor PDB file')
 
     # Run GalaxyDock3 docking (only if PDB is available)
     #if args.use_gd3 and args.receptor_pdb:
@@ -1675,14 +1711,14 @@ def consensus_dock(args, logger):
 
     # Run gold docking (only if PDB is available and selected)
     if args.use_gold:
-        if args.receptor_pdb:
+        if not args.receptor_pdb:
+            logger.warning('Skipping GOLD docking as it requires receptor PDB file')
+        else:
             try:
                 run_gold(args, logger)
                 tools_run.append('gold')
             except Exception as e:
                 logger.error(f"GOLD docking failed: {e}")
-        else:
-            logger.warning('Skipping GOLD docking as it requires receptor PDB file')
 
     # Calculate RMSD if multiple tools were run in this session OR if existing results exist
     tools_with_results = []
@@ -1707,7 +1743,8 @@ def consensus_dock(args, logger):
             tools_with_results.append('gold')
         if os.path.exists(os.path.join(args.outfolder, 'gnina', 'results.csv')) and 'gnina' not in tools_with_results:
             tools_with_results.append('gnina')
-    
+    logger.info(f"Tools with results: {tools_with_results}")
+
     # Calculate RMSD if we have results from multiple tools and user hasn't disabled it
     if args.skip_rmsd:
         logger.info("Skipping RMSD calculation (--skip_rmsd flag enabled)")
@@ -1769,11 +1806,43 @@ def main():
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
     
-    # Validate receptor input arguments
+    # Validate receptor input arguments based on selected tools
+    # First, determine what tools will be used
+    temp_use_smina = args.use_smina
+    temp_use_ledock = args.use_ledock
+    temp_use_gold = args.use_gold
+    temp_use_gnina = args.use_gnina
+    
+    # If no docking programs are specified and only RMSD is not selected, use all available ones (backward compatibility)
+    if not temp_use_smina and not temp_use_ledock and not temp_use_gold and not temp_use_gnina and not args.only_rmsd:
+        temp_use_smina = True
+        temp_use_ledock = True
+        temp_use_gold = True
+        temp_use_gnina = True
+    
+    # Determine what receptor formats are actually needed
+    needs_pdb = temp_use_ledock or temp_use_gold or temp_use_gnina  # These tools need PDB
+    needs_pdbqt = temp_use_smina  # Only Smina needs PDBQT
+    
     if not args.receptor_pdb and not args.receptor_pdbqt:
         parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
+    
+    # Validate that we have the right format for selected tools
+    if needs_pdb and not args.receptor_pdb:
+        pdb_tools = []
+        if temp_use_ledock:
+            pdb_tools.append('LeDock')
+        if temp_use_gold:
+            pdb_tools.append('GOLD')
+        if temp_use_gnina:
+            pdb_tools.append('Gnina')
+        if pdb_tools:
+            parser.error(f"--receptor_pdb is required for the following selected tools: {', '.join(pdb_tools)}")
+    
+    if needs_pdbqt and args.skip_pdb_to_pdbqt and not args.receptor_pdbqt:
+        parser.error("When using --skip_pdb_to_pdbqt with Smina, --receptor_pdbqt must be provided")
 
-    # If no docking programs are specified and only RMSD is not selected, use all available ones (backward compatibility)
+    # Now apply the default tool selection
     if not args.use_smina and not args.use_ledock and not args.use_gold and not args.use_gnina and not args.only_rmsd:
         args.use_smina = True
         args.use_ledock = True
@@ -1808,9 +1877,15 @@ def main():
     # Create output directory if it doesn't exist
     os.makedirs(args.outfolder, exist_ok=args.overwrite)
 
-    # Create an input directory within outfolder
-    os.makedirs(os.path.join(args.outfolder, 'input'), exist_ok=args.overwrite)
+    # Determine if input directory is needed (only if any conversions will happen)
+    needs_pdbqt = args.use_smina and not args.receptor_pdbqt  # Will need to convert PDB to PDBQT
+    needs_ligand_mol2 = args.use_ledock  # LeDock needs MOL2
+    needs_input_dir = needs_pdbqt or needs_ligand_mol2 or (args.use_smina and args.receptor_pdbqt)
+    
+    # Create an input directory within outfolder only if needed
     args.outfolder_input = os.path.join(args.outfolder, 'input')
+    if needs_input_dir:
+        os.makedirs(args.outfolder_input, exist_ok=args.overwrite)
 
     # Create output directories for selected docking programs
     # Always set directory attributes to avoid attribute errors
@@ -1833,8 +1908,7 @@ def main():
     if args.use_gnina:
         os.makedirs(args.outfolder_gnina, exist_ok=args.overwrite)
 
-    # Create output directory for gd3 within outfolder (if needed in future)
-    os.makedirs(args.outfolder_gd3, exist_ok=args.overwrite)
+    # Note: gd3 directory creation removed as GalaxyDock3 is currently disabled
 
     # Timestamp for job ID
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") 
