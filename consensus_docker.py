@@ -4,23 +4,20 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from logging.handlers import RotatingFileHandler
-import re 
-from prody import parsePDB, calcRMSD
-#import nglview as nv
-from openbabel import pybel, openbabel
-
-from opencadd.structure.core import Structure
-from opencadd.io.dataframe import DataFrame
-
-from rdkit import Chem
-from rdkit.Chem import AllChem
-
-from Bio.PDB import PDBParser
+import re
 
 # filter warnings
 warnings.filterwarnings("ignore")
-ob_log_handler = pybel.ob.OBMessageHandler()
-pybel.ob.obErrorLog.SetOutputLevel(0)
+
+
+def _configure_openbabel_logging_silently():
+    """Best-effort: silence OpenBabel logs without importing at module import time."""
+    try:
+        from openbabel import pybel
+        pybel.ob.obErrorLog.SetOutputLevel(0)
+    except Exception:
+        # OpenBabel not installed or not needed for current workflow
+        pass
 
 def setup_logging(log_file):
     """
@@ -71,6 +68,8 @@ def pdb_to_pdbqt(pdb_path, pdbqt_path, logger, pH=7.4):
         Protonation at given pH.
     """
     logger.info('Converting receptor pdb to pdbqt format...')
+    _configure_openbabel_logging_silently()
+    from openbabel import pybel
     molecule = list(pybel.readfile("pdb", str(pdb_path)))[0]
     # add hydrogens at given pH
     #molecule.OBMol.CorrectForPH(pH)
@@ -207,6 +206,7 @@ def lepro(args, logger):
 def to_mol2(infile, mol_name, mol2_filepath, logger):
 
     logger.info('Converting protein/ligand to mol2 format...')
+    from rdkit import Chem
     if infile.endswith('.sdf'):
         mol = Chem.SDMolSupplier(infile)[0]
     elif infile.endswith('.pdb'):
@@ -254,6 +254,7 @@ def to_mol2(infile, mol_name, mol2_filepath, logger):
 def get_pocket_coords(args, logger):
     logger.info('Getting pocket coordinates...')
     try:
+        from opencadd.io.dataframe import DataFrame
         structure_df = DataFrame.from_file(args.pocket_pdb)
         positions = np.array([structure_df["atom.x"].values,structure_df["atom.y"].values,structure_df["atom.z"].values])
         min_coords = np.min(positions,axis=1)
@@ -291,6 +292,7 @@ def write_gold_res_file(args, logger):
     
     logger.info('Writing gold res file...')
     # create a PDBParser object
+    from Bio.PDB import PDBParser
     parser = PDBParser()
 
     # parse the PDB file
@@ -422,6 +424,8 @@ protein_datafile = {args.receptor_pdb}
 
 def split_mol(args, logger, tool="smina"):
     logger.info('Splitting docked poses into individual files...')
+    _configure_openbabel_logging_silently()
+    from openbabel import pybel
     if tool == "smina":
         docked_poses_path = Path(os.path.join(args.outfolder_smina, 'out.sdf'))
         molecules = pybel.readfile("sdf", str(docked_poses_path))
@@ -464,6 +468,7 @@ def split_mol(args, logger, tool="smina"):
 
 def make_complex(args, logger, tool="smina"):
     logger.info('Making complex...')
+    from rdkit import Chem
 
     if tool == "smina":
         receptor = Chem.MolFromPDBFile(args.receptor_pdb, removeHs=False, sanitize=True)
@@ -550,6 +555,7 @@ def make_complex(args, logger, tool="smina"):
 
 def parse_smina(args, logger):
     logger.info('Parsing smina output...')
+    from rdkit import Chem
 
     # Find out the .sdf output files in args.outfolder_smina, with the following pattern:
     # out_{pose_number}.sdf
@@ -716,7 +722,16 @@ def parse_gold(args, logger):
 
 def calculate_rmsd(args, logger):
     logger.info('Calculating rmsd...')
+    t0 = time.perf_counter()
     rmsd_result = []
+
+    try:
+        from prody import parsePDB, calcRMSD
+    except Exception as e:
+        raise RuntimeError(
+            "ProDy is required for RMSD calculation but could not be imported. "
+            "Install prody in this environment and retry."
+        ) from e
 
     # Define available tools and their configurations
     tools_config = {
@@ -741,18 +756,45 @@ def calculate_rmsd(args, logger):
     # Collect available tools with their complex files and results
     available_tools = {}
     
+    # Cache parsed ligand selections to avoid re-parsing PDB files N^2 times
+    parsed_pose_cache = {}
+
+    def _load_pose_selection(pdb_path):
+        cached = parsed_pose_cache.get(pdb_path)
+        if cached is not None:
+            return cached
+        ag = parsePDB(pdb_path)
+        sel = ag.select("hetero and noh") if ag is not None else None
+        parsed_pose_cache[pdb_path] = sel
+        return sel
+
     for tool_name, config in tools_config.items():
         folder = config['folder']
         if folder and os.path.exists(folder):
-            complex_files = glob.glob(os.path.join(folder, "complex_*.pdb"))
+            complex_files = sorted(glob.glob(os.path.join(folder, "complex_*.pdb")))
             results_file = os.path.join(folder, 'results.csv')
             
             if complex_files and os.path.exists(results_file):
                 try:
                     results_df = pd.read_csv(results_file)
+                    # Pre-map pose -> score for faster lookups
+                    pose_to_score = {}
+                    if 'Pose' in results_df.columns and len(results_df.columns) >= 2:
+                        for _, row in results_df.iterrows():
+                            try:
+                                pose_num = int(row['Pose'])
+                            except Exception:
+                                continue
+                            if config['score_column'] and config['score_column'] in results_df.columns:
+                                pose_to_score[pose_num] = row[config['score_column']]
+                            else:
+                                # GOLD special handling (score in second column)
+                                pose_to_score[pose_num] = row.iloc[1]
+
                     available_tools[tool_name] = {
                         'complex_files': complex_files,
                         'results': results_df,
+                        'pose_to_score': pose_to_score,
                         'score_column': config['score_column']
                     }
                     logger.info(f"Found {len(complex_files)} poses for {tool_name}")
@@ -778,39 +820,30 @@ def calculate_rmsd(args, logger):
             tool2_data = available_tools[tool2_name]
             
             logger.info(f"Comparing {tool1_name} vs {tool2_name}...")
+            pair_t0 = time.perf_counter()
             
             for out1 in tool1_data['complex_files']:
-                pose_number1 = re.search('complex_(\d+).pdb', out1).group(1)
-                
-                # Get score for tool1
-                pose1_df = tool1_data['results'][tool1_data['results']['Pose'] == int(pose_number1)]
-                if len(pose1_df) == 0:
+                pose_number1 = re.search(r'complex_(\d+)\.pdb', out1).group(1)
+
+                pose_num1_int = int(pose_number1)
+                score1 = tool1_data.get('pose_to_score', {}).get(pose_num1_int)
+                if score1 is None:
                     continue
                 
-                if tool1_data['score_column']:
-                    score1 = pose1_df[tool1_data['score_column']].values[0]
-                else:
-                    # Special handling for GOLD (uses iloc)
-                    score1 = pose1_df.iloc[0, 1]
-                
                 for out2 in tool2_data['complex_files']:
-                    pose_number2 = re.search('complex_(\d+).pdb', out2).group(1)
-                    
-                    # Get score for tool2
-                    pose2_df = tool2_data['results'][tool2_data['results']['Pose'] == int(pose_number2)]
-                    if len(pose2_df) == 0:
+                    pose_number2 = re.search(r'complex_(\d+)\.pdb', out2).group(1)
+
+                    pose_num2_int = int(pose_number2)
+                    score2 = tool2_data.get('pose_to_score', {}).get(pose_num2_int)
+                    if score2 is None:
                         continue
-                    
-                    if tool2_data['score_column']:
-                        score2 = pose2_df[tool2_data['score_column']].values[0]
-                    else:
-                        # Special handling for GOLD (uses iloc)
-                        score2 = pose2_df.iloc[0, 1]
                     
                     # Calculate RMSD
                     try:
-                        pose1 = parsePDB(out1).select("hetero and noh")
-                        pose2 = parsePDB(out2).select("hetero and noh")
+                        pose1 = _load_pose_selection(out1)
+                        pose2 = _load_pose_selection(out2)
+                        if pose1 is None or pose2 is None:
+                            continue
                         rmsd = calcRMSD(pose1, pose2)
                         
                         rmsd_result.append({
@@ -827,6 +860,8 @@ def calculate_rmsd(args, logger):
                     except Exception as e:
                         logger.warning(f"Error calculating RMSD for {out1} vs {out2}: {e}")
 
+            logger.info(f"Completed {tool1_name} vs {tool2_name} in {time.perf_counter() - pair_t0:.2f}s")
+
     if rmsd_result:
         rmsd_result = pd.DataFrame(rmsd_result)
         rmsd_result.to_csv(os.path.join(args.outfolder, 'final_results.csv'), index=False)
@@ -834,6 +869,8 @@ def calculate_rmsd(args, logger):
         logger.info(f'Results saved to: {os.path.join(args.outfolder, "final_results.csv")}')
     else:
         logger.warning('No RMSD results calculated. Not enough valid docking outputs.')
+
+    logger.info(f"RMSD calculation total time: {time.perf_counter() - t0:.2f}s")
 
     
 def run_smina_single(args, logger, exhaustiveness_val, temp_outdir=None):
@@ -1574,6 +1611,12 @@ def run_gold(args, logger):
 def consensus_dock(args, logger):
     # Convert receptor pdb to pdbqt format or use provided pdbqt
     logger.info('Starting consensus_dock...')
+
+    if getattr(args, 'only_rmsd', False):
+        logger.info("ONLY_RMSD mode enabled: skipping docking and conversions")
+        calculate_rmsd(args, logger)
+        logger.info('########## Finished consensus_docker.py #########')
+        return
     
     # Determine which conversions are actually needed based on selected tools
     needs_pdbqt = args.use_smina  # Only Smina requires PDBQT
@@ -1805,42 +1848,51 @@ def main():
     parser.add_argument('--skip_pdb_to_pdbqt', action='store_true', help='Skip conversion from PDB to PDBQT format (requires --receptor_pdbqt to be provided)')
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output directory if it exists')
     args = parser.parse_args()
+
+    # If --only_rmsd is provided, explicitly disable docking tools
+    if args.only_rmsd:
+        args.use_smina = False
+        args.use_gnina = False
+        args.use_ledock = False
+        args.use_gold = False
     
-    # Validate receptor input arguments based on selected tools
-    # First, determine what tools will be used
-    temp_use_smina = args.use_smina
-    temp_use_ledock = args.use_ledock
-    temp_use_gold = args.use_gold
-    temp_use_gnina = args.use_gnina
-    
-    # If no docking programs are specified and only RMSD is not selected, use all available ones (backward compatibility)
-    if not temp_use_smina and not temp_use_ledock and not temp_use_gold and not temp_use_gnina and not args.only_rmsd:
-        temp_use_smina = True
-        temp_use_ledock = True
-        temp_use_gold = True
-        temp_use_gnina = True
-    
-    # Determine what receptor formats are actually needed
-    needs_pdb = temp_use_ledock or temp_use_gold or temp_use_gnina  # These tools need PDB
-    needs_pdbqt = temp_use_smina  # Only Smina needs PDBQT
-    
-    if not args.receptor_pdb and not args.receptor_pdbqt:
-        parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
-    
-    # Validate that we have the right format for selected tools
-    if needs_pdb and not args.receptor_pdb:
-        pdb_tools = []
-        if temp_use_ledock:
-            pdb_tools.append('LeDock')
-        if temp_use_gold:
-            pdb_tools.append('GOLD')
-        if temp_use_gnina:
-            pdb_tools.append('Gnina')
-        if pdb_tools:
-            parser.error(f"--receptor_pdb is required for the following selected tools: {', '.join(pdb_tools)}")
-    
-    if needs_pdbqt and args.skip_pdb_to_pdbqt and not args.receptor_pdbqt:
-        parser.error("When using --skip_pdb_to_pdbqt with Smina, --receptor_pdbqt must be provided")
+    # Validate receptor input arguments based on selected tools.
+    # In --only_rmsd mode, receptor/ligand/pocket inputs are not required.
+    if not args.only_rmsd:
+        # First, determine what tools will be used
+        temp_use_smina = args.use_smina
+        temp_use_ledock = args.use_ledock
+        temp_use_gold = args.use_gold
+        temp_use_gnina = args.use_gnina
+
+        # If no docking programs are specified and only RMSD is not selected, use all available ones (backward compatibility)
+        if not temp_use_smina and not temp_use_ledock and not temp_use_gold and not temp_use_gnina:
+            temp_use_smina = True
+            temp_use_ledock = True
+            temp_use_gold = True
+            temp_use_gnina = True
+
+        # Determine what receptor formats are actually needed
+        needs_pdb = temp_use_ledock or temp_use_gold or temp_use_gnina  # These tools need PDB
+        needs_pdbqt = temp_use_smina  # Only Smina needs PDBQT
+
+        if not args.receptor_pdb and not args.receptor_pdbqt:
+            parser.error("At least one of --receptor_pdb or --receptor_pdbqt must be provided")
+
+        # Validate that we have the right format for selected tools
+        if needs_pdb and not args.receptor_pdb:
+            pdb_tools = []
+            if temp_use_ledock:
+                pdb_tools.append('LeDock')
+            if temp_use_gold:
+                pdb_tools.append('GOLD')
+            if temp_use_gnina:
+                pdb_tools.append('Gnina')
+            if pdb_tools:
+                parser.error(f"--receptor_pdb is required for the following selected tools: {', '.join(pdb_tools)}")
+
+        if needs_pdbqt and args.skip_pdb_to_pdbqt and not args.receptor_pdbqt:
+            parser.error("When using --skip_pdb_to_pdbqt with Smina, --receptor_pdbqt must be provided")
 
     # Now apply the default tool selection
     if not args.use_smina and not args.use_ledock and not args.use_gold and not args.use_gnina and not args.only_rmsd:
@@ -1850,42 +1902,49 @@ def main():
         args.use_gnina = True
     
     # Validate that paths are provided for selected docking programs
-    if args.use_smina and not args.smina_path:
-        parser.error("--smina_path must be provided when using smina")
-    if args.use_ledock and not args.ledock_path:
-        parser.error("--ledock_path must be provided when using LeDock")
-    if args.use_gold and not args.gold_path:
-        parser.error("--gold_path must be provided when using GOLD")
-    if args.use_gnina and not args.gnina_path:
-        parser.error("--gnina_path must be provided when using gnina")
+    if not args.only_rmsd:
+        if args.use_smina and not args.smina_path:
+            parser.error("--smina_path must be provided when using smina")
+        if args.use_ledock and not args.ledock_path:
+            parser.error("--ledock_path must be provided when using LeDock")
+        if args.use_gold and not args.gold_path:
+            parser.error("--gold_path must be provided when using GOLD")
+        if args.use_gnina and not args.gnina_path:
+            parser.error("--gnina_path must be provided when using gnina")
     
     # Check if output directory exists
-    if os.path.exists(args.outfolder):
-        if not args.overwrite:
-            parser.error(f"Output directory '{args.outfolder}' already exists. Use --overwrite to overwrite it.")
-        else:
-            # Check for existing results from previous runs
-            args.has_existing_results = any([
-                os.path.exists(os.path.join(args.outfolder, 'smina', 'results.csv')),
-                os.path.exists(os.path.join(args.outfolder, 'ledock', 'results.csv')),
-                os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv')),
-                os.path.exists(os.path.join(args.outfolder, 'gnina', 'results.csv'))
-            ])
+    if args.only_rmsd:
+        if not args.outfolder:
+            parser.error("--outfolder must be provided when using --only_rmsd")
+        if not os.path.exists(args.outfolder):
+            parser.error(f"Output directory '{args.outfolder}' does not exist for --only_rmsd")
+        args.has_existing_results = True
     else:
-        args.has_existing_results = False
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(args.outfolder, exist_ok=args.overwrite)
+        if os.path.exists(args.outfolder):
+            if not args.overwrite:
+                parser.error(f"Output directory '{args.outfolder}' already exists. Use --overwrite to overwrite it.")
+            else:
+                # Check for existing results from previous runs
+                args.has_existing_results = any([
+                    os.path.exists(os.path.join(args.outfolder, 'smina', 'results.csv')),
+                    os.path.exists(os.path.join(args.outfolder, 'ledock', 'results.csv')),
+                    os.path.exists(os.path.join(args.outfolder, 'gold', 'results.csv')),
+                    os.path.exists(os.path.join(args.outfolder, 'gnina', 'results.csv'))
+                ])
+        else:
+            args.has_existing_results = False
+
+        # Create output directory if it doesn't exist
+        os.makedirs(args.outfolder, exist_ok=args.overwrite)
 
     # Determine if input directory is needed (only if any conversions will happen)
-    needs_pdbqt = args.use_smina and not args.receptor_pdbqt  # Will need to convert PDB to PDBQT
-    needs_ligand_mol2 = args.use_ledock  # LeDock needs MOL2
-    needs_input_dir = needs_pdbqt or needs_ligand_mol2 or (args.use_smina and args.receptor_pdbqt)
-    
-    # Create an input directory within outfolder only if needed
     args.outfolder_input = os.path.join(args.outfolder, 'input')
-    if needs_input_dir:
-        os.makedirs(args.outfolder_input, exist_ok=args.overwrite)
+    if not args.only_rmsd:
+        needs_pdbqt = args.use_smina and not args.receptor_pdbqt  # Will need to convert PDB to PDBQT
+        needs_ligand_mol2 = args.use_ledock  # LeDock needs MOL2
+        needs_input_dir = needs_pdbqt or needs_ligand_mol2 or (args.use_smina and args.receptor_pdbqt)
+        if needs_input_dir:
+            os.makedirs(args.outfolder_input, exist_ok=args.overwrite)
 
     # Create output directories for selected docking programs
     # Always set directory attributes to avoid attribute errors
@@ -1896,17 +1955,18 @@ def main():
     args.outfolder_gnina = os.path.join(args.outfolder, 'gnina')
     
     # Create directories only for selected programs
-    if args.use_smina:
-        os.makedirs(args.outfolder_smina, exist_ok=args.overwrite)
+    if not args.only_rmsd:
+        if args.use_smina:
+            os.makedirs(args.outfolder_smina, exist_ok=args.overwrite)
 
-    if args.use_ledock:
-        os.makedirs(args.outfolder_ledock, exist_ok=args.overwrite)
+        if args.use_ledock:
+            os.makedirs(args.outfolder_ledock, exist_ok=args.overwrite)
 
-    if args.use_gold:
-        os.makedirs(args.outfolder_gold, exist_ok=args.overwrite)
+        if args.use_gold:
+            os.makedirs(args.outfolder_gold, exist_ok=args.overwrite)
 
-    if args.use_gnina:
-        os.makedirs(args.outfolder_gnina, exist_ok=args.overwrite)
+        if args.use_gnina:
+            os.makedirs(args.outfolder_gnina, exist_ok=args.overwrite)
 
     # Note: gd3 directory creation removed as GalaxyDock3 is currently disabled
 
